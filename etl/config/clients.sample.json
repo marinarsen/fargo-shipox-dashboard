@@ -1,0 +1,16 @@
+[
+  {
+    "key": "tez",
+    "name": "TEZ",
+    "shipoxCustomerId": "use_new_repo_secret_or_config",
+    "sourceType": "shipox_api",
+    "cityMode": "warehouse"
+  },
+  {
+    "key": "oriflame",
+    "name": "Oriflame",
+    "shipoxCustomerId": "use_new_repo_secret_or_config",
+    "sourceType": "shipox_api",
+    "cityMode": "receiver_city"
+  }
+]

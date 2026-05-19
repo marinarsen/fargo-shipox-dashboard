@@ -1,0 +1,676 @@
+import {
+  AlertTriangle,
+  Building2,
+  CalendarDays,
+  ChevronRight,
+  CircleDot,
+  Clock3,
+  Filter,
+  MapPin,
+  PackageCheck,
+  Route,
+  Search,
+  Users,
+} from 'lucide-react'
+import { useEffect, useMemo, useState } from 'react'
+import './App.css'
+import type {
+  CityMetric,
+  ClientMetric,
+  DailyRouteMetric,
+  DashboardSnapshot,
+  DeliveryFlowMetric,
+  Kpi,
+  OrderRecord,
+  RegionMetric,
+  RiskLevel,
+} from './types'
+
+type DetailTarget =
+  | { kind: 'client'; item: ClientMetric }
+  | { kind: 'city'; item: CityMetric }
+  | { kind: 'region'; item: RegionMetric }
+  | { kind: 'flow'; item: DeliveryFlowMetric }
+
+type AnalysisMode = 'events' | 'cohort'
+
+type MetricAccumulator = {
+  key: string
+  name: string
+  manager: string
+  email: string
+  region: string
+  availabilityLagDays: number
+  active: number
+  delivered: number
+  pickupVolume: number
+  deliveryVolume: number
+  deliveryTimeSum: number
+  firstAttemptTimeSum: number
+  cohortDelivered: number
+  cohortReturns: number
+  cohortDeliveryTimeSum: number
+  noAttempt2d: number
+  stale: number
+  tails: number
+  returns: number
+  failed: number
+}
+
+const riskOrder: Record<RiskLevel, number> = {
+  critical: 4,
+  risk: 3,
+  watch: 2,
+  ok: 1,
+}
+
+type StatusMetricKey = 'active' | 'noAttempt2d' | 'stale' | 'tails' | 'failed' | 'returns'
+
+const statusMetric: Record<string, StatusMetricKey> = {
+  active: 'active',
+  no_attempt: 'noAttempt2d',
+  stale: 'stale',
+  tails: 'tails',
+  failed: 'failed',
+  returns: 'returns',
+}
+
+const TODAY = '2026-05-18'
+
+function formatNumber(value: number) {
+  return Math.round(value).toLocaleString('ru-RU')
+}
+
+function formatDelta(value: number) {
+  if (value > 0) return `+${value}%`
+  return `${value}%`
+}
+
+function kpiClass(kpi: Kpi) {
+  return `kpi-card kpi-${kpi.risk}`
+}
+
+function barWidth(value: number, max: number) {
+  return `${Math.max(4, Math.round((value / Math.max(1, max)) * 100))}%`
+}
+
+function toDate(value: string) {
+  return new Date(`${value}T00:00:00.000Z`)
+}
+
+function toIsoDate(date: Date) {
+  return date.toISOString().slice(0, 10)
+}
+
+function addDays(value: string, days: number) {
+  const date = toDate(value)
+  date.setUTCDate(date.getUTCDate() + days)
+  return toIsoDate(date)
+}
+
+function daysBetween(from: string, to: string) {
+  return Math.max(1, Math.round((toDate(to).getTime() - toDate(from).getTime()) / 86400000) + 1)
+}
+
+function rangeLabel(from: string, to: string) {
+  return `${from.split('-').reverse().join('.')} - ${to.split('-').reverse().join('.')}`
+}
+
+function normalizeRange(range: { from: string; to: string }) {
+  if (range.from <= range.to) return range
+  return { from: range.to, to: range.from }
+}
+
+function getPresetRange(period: string) {
+  if (period === 'today') return { from: TODAY, to: TODAY }
+  if (period === 'yesterday') return { from: addDays(TODAY, -1), to: addDays(TODAY, -1) }
+  if (period === 'last7') return { from: addDays(TODAY, -6), to: TODAY }
+  if (period === 'last30') return { from: addDays(TODAY, -29), to: TODAY }
+  if (period === 'may') return { from: '2026-05-01', to: TODAY }
+  return { from: '2026-01-01', to: TODAY }
+}
+
+function getMonthRange(month: string) {
+  const [year, monthNumber] = month.split('-').map(Number)
+  const from = `${month}-01`
+  const lastDay = new Date(Date.UTC(year, monthNumber, 0)).toISOString().slice(0, 10)
+  return { from, to: lastDay > TODAY ? TODAY : lastDay }
+}
+
+function getWeekRange(week: string) {
+  const [, weekText] = week.split('-W')
+  const firstThursday = new Date(Date.UTC(2026, 0, 1))
+  const start = new Date(firstThursday)
+  start.setUTCDate(firstThursday.getUTCDate() + (Number(weekText) - 1) * 7 - 3)
+  const end = new Date(start)
+  end.setUTCDate(start.getUTCDate() + 6)
+  return { from: toIsoDate(start), to: toIsoDate(end) > TODAY ? TODAY : toIsoDate(end) }
+}
+
+function routeMatchesStatus(route: DailyRouteMetric, status: string) {
+  if (status === 'all') return true
+  const metric = statusMetric[status]
+  if (!metric) return true
+  return Number(route[metric] || 0) > 0
+}
+
+function riskOf(item: Pick<MetricAccumulator, 'active' | 'noAttempt2d' | 'stale' | 'failed' | 'returns'>): RiskLevel {
+  if (item.noAttempt2d > 100 || item.stale > 300 || item.failed > 80) return 'critical'
+  if (item.noAttempt2d > 30 || item.stale > 80 || item.failed > 25) return 'risk'
+  if (item.active > 200 || item.noAttempt2d > 0 || item.stale > 0 || item.returns > 0) return 'watch'
+  return 'ok'
+}
+
+function emptyAccumulator(key: string, name: string): MetricAccumulator {
+  return {
+    key,
+    name,
+    manager: '',
+    email: '',
+    region: '',
+    availabilityLagDays: 1,
+    active: 0,
+    delivered: 0,
+    pickupVolume: 0,
+    deliveryVolume: 0,
+    deliveryTimeSum: 0,
+    firstAttemptTimeSum: 0,
+    cohortDelivered: 0,
+    cohortReturns: 0,
+    cohortDeliveryTimeSum: 0,
+    noAttempt2d: 0,
+    stale: 0,
+    tails: 0,
+    returns: 0,
+    failed: 0,
+  }
+}
+
+function addRoute(target: MetricAccumulator, route: DailyRouteMetric) {
+  target.active += route.active
+  target.delivered += route.delivered
+  target.pickupVolume += route.pickupVolume
+  target.deliveryVolume += route.deliveryVolume
+  target.deliveryTimeSum += route.deliveryTimeSum
+  target.firstAttemptTimeSum += route.firstAttemptTimeSum
+  target.cohortDelivered += route.cohortDelivered || 0
+  target.cohortReturns += route.cohortReturns || 0
+  target.cohortDeliveryTimeSum += route.cohortDeliveryTimeSum || 0
+  target.noAttempt2d += route.noAttempt2d
+  target.stale += route.stale
+  target.tails += route.tails
+  target.returns += route.returns
+  target.failed += route.failed
+}
+
+function calcDelta(current: number, previous: number) {
+  if (!previous && !current) return 0
+  if (!previous) return 0
+  return Math.round(((current - previous) / previous) * 100)
+}
+
+function sortOtherLast<T extends { name: string }>(item: T) {
+  return item.name === 'OTHER' || item.name === 'Прочие города' ? 1 : 0
+}
+
+function aggregateRoutes(
+  routes: DailyRouteMetric[],
+  dimension: 'client' | 'city' | 'region' | 'flow',
+  previousRoutes: DailyRouteMetric[] = [],
+) {
+  const previousMap = new Map<string, MetricAccumulator>()
+  for (const route of previousRoutes) {
+    const key = dimension === 'client' ? route.clientKey : dimension === 'city' ? route.cityKey : dimension === 'region' ? route.regionKey : route.flowKey
+    const name = dimension === 'client' ? route.clientName : dimension === 'city' ? route.cityName : dimension === 'region' ? route.regionName : route.flowLabel
+    const row = previousMap.get(key) || emptyAccumulator(key, name)
+    addRoute(row, route)
+    previousMap.set(key, row)
+  }
+
+  const map = new Map<string, MetricAccumulator>()
+  for (const route of routes) {
+    const key = dimension === 'client' ? route.clientKey : dimension === 'city' ? route.cityKey : dimension === 'region' ? route.regionKey : route.flowKey
+    const name = dimension === 'client' ? route.clientName : dimension === 'city' ? route.cityName : dimension === 'region' ? route.regionName : route.flowLabel
+    const row = map.get(key) || emptyAccumulator(key, name)
+    row.manager = dimension === 'client' ? '' : route.manager
+    row.email = route.email
+    row.region = route.regionName
+    row.availabilityLagDays = route.availabilityLagDays
+    addRoute(row, route)
+    map.set(key, row)
+  }
+
+  return [...map.values()].map((row) => {
+    const previous = previousMap.get(row.key)
+    return {
+      ...row,
+      pickupDelta: calcDelta(row.pickupVolume, previous?.pickupVolume || 0),
+      deliveryDelta: calcDelta(row.deliveryVolume, previous?.deliveryVolume || 0),
+      deliveryTime: row.delivered ? row.deliveryTimeSum / row.delivered : 0,
+      firstAttemptTime: row.delivered ? row.firstAttemptTimeSum / row.delivered : 0,
+      cohortDeliveryTime: row.cohortDelivered ? row.cohortDeliveryTimeSum / row.cohortDelivered : 0,
+      risk: riskOf(row),
+    }
+  })
+}
+
+function getDetailTitle(target: DetailTarget) {
+  if (target.kind === 'client') return `Клиент: ${target.item.name}`
+  if (target.kind === 'city') return `Город: ${target.item.name}`
+  if (target.kind === 'region') return `Регион: ${target.item.name}`
+  return `Тип доставки: ${target.item.label}`
+}
+
+function getDetailRows(target: DetailTarget) {
+  const item = target.item
+  const created = 'deliveryVolume' in item ? item.deliveryVolume || 0 : item.active
+  const rows = [
+    ['Создано', formatNumber(created)],
+    ['Доставлено', formatNumber(item.delivered || 0)],
+    ['Delivery time', `${item.deliveryTime.toFixed(1)} дн`],
+    ['До 1-й попытки', `${item.firstAttemptTime.toFixed(1)} дн`],
+    ['Без попытки 2+ дня', formatNumber(item.noAttempt2d)],
+    ['Статус не обновлялся', formatNumber(item.stale)],
+  ]
+  if (target.kind !== 'client') rows.unshift(['Ответственный', item.manager || 'Операции'])
+  if ('pickupVolume' in item) rows.push(['Из ПВЗ / прием', `${formatNumber(item.pickupVolume || 0)} (${formatDelta(item.pickupDelta || 0)})`])
+  if ('deliveryVolume' in item) rows.push(['Создано в город', `${formatNumber(item.deliveryVolume || 0)} (${formatDelta(item.deliveryDelta || 0)})`])
+  if ('tails' in item) rows.push(['Старые хвосты', formatNumber(item.tails)])
+  if ('failed' in item) rows.push(['Failed', formatNumber(item.failed)])
+  return rows
+}
+
+function orderMatchesDetail(order: OrderRecord, target: DetailTarget) {
+  if (target.kind === 'client') return order.clientKey === target.item.key
+  if (target.kind === 'city') return order.cityKey === target.item.key
+  if (target.kind === 'flow') return order.flowKey === target.item.key
+  return order.manager === target.item.manager
+}
+
+function orderMatchesStatus(order: OrderRecord, status: string) {
+  if (status === 'all' || status === 'active') return true
+  if (status === 'no_attempt') return order.status.includes('Без попытки')
+  if (status === 'stale') return order.status.includes('Нет обновления')
+  if (status === 'tails') return order.status.includes('хвост')
+  if (status === 'failed') return order.status.includes('failed') || order.status.includes('Failed')
+  if (status === 'returns') return order.status.includes('Возврат')
+  return true
+}
+
+function DashboardApp({ snapshot }: { snapshot: DashboardSnapshot }) {
+  const [period, setPeriod] = useState(snapshot.periodOptions[0].key)
+  const [status, setStatus] = useState(snapshot.statusOptions[0].key)
+  const [client, setClient] = useState('all')
+  const [city, setCity] = useState('all')
+  const [analysisMode, setAnalysisMode] = useState<AnalysisMode>('events')
+  const [clientMode, setClientMode] = useState<'top' | 'all'>('top')
+  const [cityMode, setCityMode] = useState<'top' | 'all'>('top')
+  const [regionMode, setRegionMode] = useState<'top' | 'all'>('top')
+  const [periodMode, setPeriodMode] = useState<'preset' | 'month' | 'week' | 'range'>('preset')
+  const [month, setMonth] = useState('2026-05')
+  const [week, setWeek] = useState('2026-W20')
+  const [dateFrom, setDateFrom] = useState('2026-05-01')
+  const [dateTo, setDateTo] = useState(TODAY)
+  const initialDetail = snapshot.clients[0] || ({ key: 'none', name: 'Нет данных' } as ClientMetric)
+  const [detail, setDetail] = useState<DetailTarget>({ kind: 'client', item: initialDetail })
+
+  const currentRange = useMemo(() => {
+    if (periodMode === 'month') return normalizeRange(getMonthRange(month))
+    if (periodMode === 'week') return normalizeRange(getWeekRange(week))
+    if (periodMode === 'range') return normalizeRange({ from: dateFrom, to: dateTo })
+    return normalizeRange(getPresetRange(period))
+  }, [dateFrom, dateTo, month, period, periodMode, week])
+
+  const previousRange = useMemo(() => {
+    const length = daysBetween(currentRange.from, currentRange.to)
+    return { from: addDays(currentRange.from, -length), to: addDays(currentRange.from, -1) }
+  }, [currentRange.from, currentRange.to])
+
+  const allRoutes = useMemo(() => snapshot.dailyRoutes || [], [snapshot.dailyRoutes])
+  const routes = useMemo(() => {
+    return allRoutes.filter((route) => {
+      if (route.date < currentRange.from || route.date > currentRange.to) return false
+      if (client !== 'all' && route.clientKey !== client) return false
+      if (city !== 'all' && route.cityKey !== city) return false
+      return routeMatchesStatus(route, status)
+    })
+  }, [allRoutes, city, client, currentRange.from, currentRange.to, status])
+
+  const previousRoutes = useMemo(() => {
+    return allRoutes.filter((route) => {
+      if (route.date < previousRange.from || route.date > previousRange.to) return false
+      if (client !== 'all' && route.clientKey !== client) return false
+      if (city !== 'all' && route.cityKey !== city) return false
+      return routeMatchesStatus(route, status)
+    })
+  }, [allRoutes, city, client, previousRange.from, previousRange.to, status])
+
+  const clients = useMemo(() => {
+    return aggregateRoutes(routes, 'client', previousRoutes)
+      .sort((a, b) => riskOrder[b.risk] - riskOrder[a.risk] || b.active + b.delivered - (a.active + a.delivered)) as ClientMetric[]
+  }, [previousRoutes, routes])
+
+  const cities = useMemo(() => {
+    return aggregateRoutes(routes, 'city', previousRoutes)
+      .sort((a, b) => sortOtherLast(a) - sortOtherLast(b) || riskOrder[b.risk] - riskOrder[a.risk] || b.deliveryVolume - a.deliveryVolume) as CityMetric[]
+  }, [previousRoutes, routes])
+
+  const regions = useMemo(() => {
+    return aggregateRoutes(routes, 'region', previousRoutes)
+      .map((item) => ({ ...item, name: item.name === 'OTHER' ? 'Прочие города' : item.name }))
+      .sort((a, b) => sortOtherLast(a) - sortOtherLast(b) || riskOrder[b.risk] - riskOrder[a.risk] || b.deliveryVolume - a.deliveryVolume) as RegionMetric[]
+  }, [previousRoutes, routes])
+
+  const flows = useMemo(() => {
+    const totalActive = routes.reduce((sum, route) => sum + route.active, 0)
+    return aggregateRoutes(routes, 'flow', previousRoutes)
+      .map((item) => ({ ...item, label: item.name, shortLabel: item.name, share: Math.round((item.active / Math.max(1, totalActive)) * 100) }))
+      .sort((a, b) => riskOrder[b.risk] - riskOrder[a.risk] || b.deliveryVolume - a.deliveryVolume) as DeliveryFlowMetric[]
+  }, [previousRoutes, routes])
+
+  const clientOptions = useMemo(() => {
+    const map = new Map(allRoutes.map((route) => [route.clientKey, route.clientName]))
+    return [...map.entries()].sort((a, b) => a[1].localeCompare(b[1], 'ru'))
+  }, [allRoutes])
+
+  const cityOptions = useMemo(() => {
+    const map = new Map(allRoutes.map((route) => [route.cityKey, route.cityName]))
+    return [...map.entries()].sort((a, b) => a[1].localeCompare(b[1], 'ru'))
+  }, [allRoutes])
+
+  const visibleClients = clientMode === 'top' ? clients.slice(0, 8) : clients
+  const visibleCities = cityMode === 'top' ? cities.slice(0, 10) : cities
+  const visibleRegions = regionMode === 'top' ? regions.slice(0, 8) : regions
+  const visibleOrders = snapshot.orders
+    .filter((order) => orderMatchesDetail(order, detail))
+    .filter((order) => orderMatchesStatus(order, status))
+    .slice(0, 10)
+  const maxCityActive = Math.max(1, ...cities.map((item) => item.deliveryVolume))
+  const maxRegionActive = Math.max(1, ...regions.map((item) => item.deliveryVolume))
+  const maxFlowActive = Math.max(1, ...flows.map((item) => item.deliveryVolume))
+
+  const totalDelivered = routes.reduce((sum, item) => sum + item.delivered, 0)
+  const totalNoAttempt = routes.reduce((sum, item) => sum + item.noAttempt2d, 0)
+  const totalTails = routes.reduce((sum, item) => sum + item.tails, 0)
+  const totalPickup = routes.reduce((sum, item) => sum + item.pickupVolume, 0)
+  const totalDelivery = routes.reduce((sum, item) => sum + item.deliveryVolume, 0)
+  const totalDeliveryTime = routes.reduce((sum, item) => sum + item.deliveryTimeSum, 0)
+  const avgDt = totalDelivered ? totalDeliveryTime / totalDelivered : 0
+  const isCohort = analysisMode === 'cohort'
+  const prevPickup = previousRoutes.reduce((sum, item) => sum + item.pickupVolume, 0)
+  const prevDelivery = previousRoutes.reduce((sum, item) => sum + item.deliveryVolume, 0)
+  const selectedRangeLabel = rangeLabel(currentRange.from, currentRange.to)
+  const hasPreviousData = previousRoutes.length > 0
+  const pickupComparison = hasPreviousData ? `к прошлому периоду ${formatDelta(calcDelta(totalPickup, prevPickup))}` : 'нет базы для сравнения'
+  const deliveryComparison = hasPreviousData ? `к прошлому периоду ${formatDelta(calcDelta(totalDelivery, prevDelivery))}` : 'нет базы для сравнения'
+  const deltaText = (value: number) => (hasPreviousData ? formatDelta(value) : 'без сравнения')
+
+  const kpis: Kpi[] = [
+    { key: 'created', label: 'Создано заказов', value: formatNumber(totalDelivery), delta: selectedRangeLabel, risk: 'ok' },
+    { key: 'delivered', label: 'Доставлено', value: formatNumber(totalDelivered), delta: selectedRangeLabel, risk: 'ok' },
+    { key: 'pickup', label: 'Из ПВЗ / прием', value: formatNumber(totalPickup), delta: pickupComparison, risk: 'ok' },
+    { key: 'delivery', label: 'В город доставки', value: formatNumber(totalDelivery), delta: deliveryComparison, risk: 'ok' },
+    { key: 'dt', label: 'Delivery time', value: `${avgDt.toFixed(1)} дн`, delta: avgDt > 4 ? 'хуже нормы' : 'в норме', risk: avgDt > 4 ? 'risk' : 'ok' },
+    { key: 'attempt', label: 'До 1-й попытки', value: 'н/д', delta: 'нужен расчет из webhook', risk: 'watch' },
+    { key: 'no_attempt', label: 'Без попытки 2+ дня', value: formatNumber(totalNoAttempt), delta: 'нужен ручной контроль', risk: totalNoAttempt > 250 ? 'critical' : 'watch' },
+    { key: 'tails', label: 'Старые хвосты', value: formatNumber(totalTails), delta: 'старые активные заказы', risk: totalTails > 500 ? 'risk' : 'watch' },
+  ]
+
+  return (
+    <main className="dashboard">
+      <div className="sticky-command">
+        <header className="topbar">
+          <div className="brand-block">
+            <img className="brand-logo" src="/fargo-logo-original.png" alt="Fargo Parcel Service" />
+            <div>
+              <h1>Fargo / Shipox Control Tower</h1>
+              <p>Операционный контроль доставки, приема, ПВЗ, городов, клиентов и ответственных менеджеров</p>
+            </div>
+          </div>
+          <div className="topbar-meta">
+            <span>{snapshot.environment}</span>
+            <span>{snapshot.sourceMode === 'sample' ? 'демо-данные' : 'живые данные Mongo'}</span>
+            <span>обновлено {snapshot.generatedAt}</span>
+          </div>
+        </header>
+
+        <section className="period-toolbar" aria-label="Период">
+          <div className="period-tabs">
+            <button className={periodMode === 'preset' ? 'active' : ''} type="button" onClick={() => setPeriodMode('preset')}>Пресет</button>
+            <button className={periodMode === 'month' ? 'active' : ''} type="button" onClick={() => setPeriodMode('month')}>Месяц</button>
+            <button className={periodMode === 'week' ? 'active' : ''} type="button" onClick={() => setPeriodMode('week')}>Неделя</button>
+            <button className={periodMode === 'range' ? 'active' : ''} type="button" onClick={() => setPeriodMode('range')}>Точный отрезок</button>
+          </div>
+          {periodMode === 'preset' && <label><CalendarDays size={16} /><span>Период</span><select value={period} onChange={(event) => setPeriod(event.target.value)}>{snapshot.periodOptions.map((item) => <option value={item.key} key={item.key}>{item.label}</option>)}</select></label>}
+          {periodMode === 'month' && <label><CalendarDays size={16} /><span>Месяц</span><input type="month" value={month} max="2026-05" onChange={(event) => setMonth(event.target.value)} /></label>}
+          {periodMode === 'week' && <label><CalendarDays size={16} /><span>Неделя</span><input type="week" value={week} max="2026-W21" onChange={(event) => setWeek(event.target.value)} /></label>}
+          {periodMode === 'range' && <><label><CalendarDays size={16} /><span>С</span><input type="date" value={dateFrom} min="2026-01-01" max={TODAY} onChange={(event) => setDateFrom(event.target.value)} /></label><label><CalendarDays size={16} /><span>По</span><input type="date" value={dateTo} min="2026-01-01" max={TODAY} onChange={(event) => setDateTo(event.target.value)} /></label></>}
+          <button className="quick-period" type="button" onClick={() => { setPeriodMode('preset'); setPeriod('last7') }}>7 дней</button>
+          <button className="quick-period" type="button" onClick={() => { setPeriodMode('preset'); setPeriod('last30') }}>30 дней</button>
+          <button className="quick-period" type="button" onClick={() => { setPeriodMode('preset'); setPeriod('y2026') }}>2026</button>
+        </section>
+
+        <section className="control-strip" aria-label="Фильтры">
+          <label><Building2 size={16} /><span>Клиент</span><select value={client} onChange={(event) => setClient(event.target.value)}><option value="all">Все клиенты</option>{clientOptions.map(([key, name]) => <option value={key} key={key}>{name}</option>)}</select></label>
+          <label><MapPin size={16} /><span>Город</span><select value={city} onChange={(event) => setCity(event.target.value)}><option value="all">Все города</option>{cityOptions.map(([key, name]) => <option value={key} key={key}>{name}</option>)}</select></label>
+          <label><Filter size={16} /><span>Статус</span><select value={status} onChange={(event) => setStatus(event.target.value)}>{snapshot.statusOptions.map((item) => <option value={item.key} key={item.key}>{item.label}</option>)}</select></label>
+          <div className="range-note"><Search size={16} /><span>{selectedRangeLabel}</span></div>
+        </section>
+      </div>
+
+      <section className="kpi-grid" aria-label="Главные показатели">
+        {kpis.map((kpi) => (
+          <article className={kpiClass(kpi)} key={kpi.key}>
+            <div className="kpi-topline"><span>{kpi.label}</span></div>
+            <strong>{kpi.value}</strong>
+            <small>{kpi.delta}</small>
+          </article>
+        ))}
+      </section>
+
+      <section className="main-grid">
+        <section className="work-area">
+          <div className="section-head">
+            <div>
+              <h2>Клиенты</h2>
+              <p>{isCohort ? 'Когорта: берем заказы, созданные в выбранный период, и смотрим их текущий результат.' : 'События: считаем доставки, возвраты и DT по дате финального статуса внутри периода.'}</p>
+            </div>
+            <div className="client-tools">
+              <div className="view-toggle analysis-toggle">
+                <button className={analysisMode === 'events' ? 'active' : ''} type="button" onClick={() => setAnalysisMode('events')}>События периода</button>
+                <button className={analysisMode === 'cohort' ? 'active' : ''} type="button" onClick={() => setAnalysisMode('cohort')}>Когорта созданных</button>
+              </div>
+              <div className="view-toggle">
+                <button className={clientMode === 'top' ? 'active' : ''} type="button" onClick={() => setClientMode('top')}>Топ</button>
+                <button className={clientMode === 'all' ? 'active' : ''} type="button" onClick={() => setClientMode('all')}>Все</button>
+              </div>
+            </div>
+          </div>
+
+          <div className="table-shell">
+            <table className="smart-table">
+              <thead>
+                <tr>
+                  <th>Клиент</th><th>Создано</th><th>Доставлено</th><th>DT</th><th>{isCohort ? 'Доля доставки' : 'Нет попытки'}</th><th>{isCohort ? 'Возвраты когорты' : 'Нет статуса'}</th><th>Хвосты</th><th>Возвраты</th><th>Failed</th>
+                </tr>
+              </thead>
+              <tbody>
+                {visibleClients.map((item) => (
+                  <tr className={detail.kind === 'client' && detail.item.key === item.key ? 'is-selected' : ''} key={item.key} onClick={() => setDetail({ kind: 'client', item })}>
+                    <td><button className="row-button" type="button">{item.name}<ChevronRight size={15} /></button></td>
+                    <td>{formatNumber(item.deliveryVolume || 0)}</td>
+                    <td>{formatNumber(isCohort ? item.cohortDelivered || 0 : item.delivered)}</td>
+                    <td>{(isCohort ? item.cohortDeliveryTime || 0 : item.deliveryTime).toFixed(1)}</td>
+                    <td>{isCohort ? `${Math.round(((item.cohortDelivered || 0) / Math.max(1, item.deliveryVolume || 0)) * 1000) / 10}%` : formatNumber(item.noAttempt2d)}</td>
+                    <td>{isCohort ? formatNumber(item.cohortReturns || 0) : formatNumber(item.stale)}</td>
+                    <td>{formatNumber(item.tails)}</td><td>{formatNumber(item.returns)}</td><td>{formatNumber(item.failed)}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+
+          <div className="split-panels">
+            <article className="panel-block">
+              <div className="section-head compact">
+                <div><h2>Регионы</h2><p>География, ответственные менеджеры и изменение объема к прошлому периоду.</p></div>
+                <div className="view-toggle small">
+                  <button className={regionMode === 'top' ? 'active' : ''} type="button" onClick={() => setRegionMode('top')}>Топ</button>
+                  <button className={regionMode === 'all' ? 'active' : ''} type="button" onClick={() => setRegionMode('all')}>Все</button>
+                </div>
+              </div>
+              <div className="city-stack">
+                {visibleRegions.map((item) => (
+                  <button className={`city-card region-card ${detail.kind === 'region' && detail.item.key === item.key ? 'is-selected' : ''}`} key={item.key} type="button" onClick={() => setDetail({ kind: 'region', item })}>
+                    <div><strong>{item.name}</strong><span>{item.manager}</span></div>
+                    <div className="city-bar"><span style={{ width: barWidth(item.deliveryVolume, maxRegionActive) }} /></div>
+                    <div className="city-numbers"><span>{formatNumber(item.deliveryVolume)} создано</span><span>из ПВЗ {deltaText(item.pickupDelta)}</span><span>в город {deltaText(item.deliveryDelta)}</span></div>
+                  </button>
+                ))}
+              </div>
+            </article>
+
+            <article className="panel-block">
+              <div className="section-head compact">
+                <div><h2>Города</h2><p>Объемы по городам, ответственный менеджер и изменение к прошлому периоду.</p></div>
+                <div className="view-toggle small">
+                  <button className={cityMode === 'top' ? 'active' : ''} type="button" onClick={() => setCityMode('top')}>Топ</button>
+                  <button className={cityMode === 'all' ? 'active' : ''} type="button" onClick={() => setCityMode('all')}>Все</button>
+                </div>
+              </div>
+              <div className="city-stack">
+                {visibleCities.map((item) => (
+                  <button className={`city-card ${detail.kind === 'city' && detail.item.key === item.key ? 'is-selected' : ''}`} key={item.key} type="button" onClick={() => setDetail({ kind: 'city', item })}>
+                    <div><strong>{item.name}</strong><span>{item.region} / {item.manager}</span></div>
+                    <div className="city-bar"><span style={{ width: barWidth(item.deliveryVolume, maxCityActive) }} /></div>
+                    <div className="city-numbers"><span>{formatNumber(item.deliveryVolume)} создано</span><span>из ПВЗ {deltaText(item.pickupDelta)}</span><span>в город {deltaText(item.deliveryDelta)}</span></div>
+                  </button>
+                ))}
+              </div>
+            </article>
+          </div>
+
+          <article className="panel-block">
+            <div className="section-head compact">
+              <div><h2>Типы доставки</h2><p>GDP учитываем как ПВЗ. Видны все варианты: ПВЗ/дверь/возврат/городская доставка.</p></div>
+              <Route size={19} />
+            </div>
+            <div className="flow-list">
+              {flows.map((item) => (
+                <button className={`flow-card ${detail.kind === 'flow' && detail.item.key === item.key ? 'is-selected' : ''}`} key={item.key} type="button" onClick={() => setDetail({ kind: 'flow', item })}>
+                  <div className="flow-top"><strong>{item.label}</strong></div>
+                  <div className="mini-bar"><span style={{ width: barWidth(item.deliveryVolume, maxFlowActive) }} /></div>
+                  <div className="flow-metrics">
+                    <span>{formatNumber(item.active)} в работе</span><span>из ПВЗ {formatNumber(item.pickupVolume)} ({deltaText(item.pickupDelta)})</span><span>в город {formatNumber(item.deliveryVolume)} ({deltaText(item.deliveryDelta)})</span><span>DT {item.deliveryTime.toFixed(1)}</span>
+                  </div>
+                </button>
+              ))}
+            </div>
+          </article>
+        </section>
+
+        <aside className="inspector">
+          <article className="detail-card">
+            <div className="section-head compact"><div><h2>{getDetailTitle(detail)}</h2><p>Детали выбранной строки</p></div><CircleDot size={18} /></div>
+            <div className="detail-grid">{getDetailRows(detail).map(([label, value]) => <div key={label}><span>{label}</span><strong>{value}</strong></div>)}</div>
+            <div className="focus-line"><Clock3 size={17} /><span>Приоритет: без попытки 2+ дня, старые хвосты, нет обновления статуса, затем рост/спад приема и доставки по ответственному менеджеру.</span></div>
+          </article>
+
+          <article className="detail-card">
+            <div className="section-head compact"><div><h2>Заказы в выборке</h2><p>Можно кликнуть на клиента, город, регион или тип доставки и увидеть примеры заказов.</p></div><Search size={19} /></div>
+            <div className="orders-list">
+              {visibleOrders.length ? visibleOrders.map((order) => (
+                <button className="order-row" type="button" key={order.id}>
+                  <strong>{order.id}</strong>
+                  <span>{order.clientName} / {order.cityName}</span>
+                  <span>{order.flowLabel}</span>
+                  <span>{order.status}</span>
+                  <small>создан {order.createdAt}, обновлен {order.statusUpdatedAt}, источник: {order.source}</small>
+                </button>
+              )) : <div className="empty-state">По этой комбинации фильтров нет примеров в drilldown. Агрегаты выше считаются по всем Mongo-строкам, не только по этим примерам.</div>}
+            </div>
+          </article>
+
+          <article className="detail-card">
+            <div className="section-head compact"><div><h2>Откуда цифры</h2><p>Проверочная логика расчета</p></div><Filter size={19} /></div>
+            <div className="formula-list">
+              <div><strong>Период</strong><span>фильтруем ежедневные агрегаты Mongo по выбранным датам, без коэффициентов и имитации</span></div>
+              <div><strong>Из ПВЗ / в город</strong><span>из ПВЗ показывает отправки, которые стартуют из пункта; в город показывает все созданные заказы по городу назначения</span></div>
+              <div><strong>Сравнение</strong><span>текущий отрезок сравнивается с предыдущим отрезком такой же длины</span></div>
+              <div><strong>До 1-й попытки</strong><span>пока помечено н/д: следующий шаг — оптимальный join с Mongo webhook</span></div>
+            </div>
+          </article>
+
+          <article className="detail-card">
+            <div className="section-head compact"><div><h2>Алерты</h2><p>С конкретной привязкой к ops-менеджерам регионов</p></div><AlertTriangle size={19} /></div>
+            <div className="alert-list">
+              {regions.filter((item) => item.risk !== 'ok').slice(0, 8).map((item) => (
+                <div className={`alert-item alert-${item.risk}`} key={item.key}>
+                  <div><strong>{item.name}: {formatNumber(item.noAttempt2d)} без первой попытки</strong><span>{item.manager}</span></div>
+                  <p>В работе {formatNumber(item.active)}, нет статуса {formatNumber(item.stale)}, возвраты {formatNumber(item.returns)}, failed {formatNumber(item.failed)}.</p>
+                </div>
+              ))}
+            </div>
+          </article>
+
+          <article className="detail-card">
+            <div className="section-head compact"><div><h2>Менеджеры регионов</h2><p>Где растет прием и доставка</p></div><Users size={19} /></div>
+            <div className="manager-list">
+              {visibleRegions.map((item) => (
+                <div className="manager-row" key={item.key}>
+                  <strong>{item.manager}</strong>
+                  <span>{item.name}</span>
+                  <span>из ПВЗ {deltaText(item.pickupDelta)}</span>
+                  <span>в город {deltaText(item.deliveryDelta)}</span>
+                </div>
+              ))}
+            </div>
+          </article>
+
+          <article className="detail-card">
+            <div className="section-head compact"><div><h2>2026 динамика</h2><p>Доставлено и DT по месяцам</p></div><PackageCheck size={19} /></div>
+            <div className="timeline">
+              {snapshot.timeline.map((item) => (
+                <div className="timeline-row" key={item.label}><span>{item.label}</span><div className="timeline-track"><i style={{ width: barWidth(item.delivered, 90000) }} /></div><strong>{formatNumber(item.delivered)}</strong><small>DT {item.deliveryTime.toFixed(1)}</small></div>
+              ))}
+            </div>
+          </article>
+        </aside>
+      </section>
+    </main>
+  )
+}
+
+function App() {
+  const [snapshot, setSnapshot] = useState<DashboardSnapshot | null>(null)
+
+  useEffect(() => {
+    let mounted = true
+    fetch('/generatedSnapshot.json')
+      .then((response) => response.json())
+      .then((data: DashboardSnapshot) => {
+        if (mounted) setSnapshot(data)
+      })
+      .catch(() => {
+        if (mounted) setSnapshot(null)
+      })
+    return () => {
+      mounted = false
+    }
+  }, [])
+
+  if (!snapshot) {
+    return (
+      <main className="dashboard loading-screen">
+        <section className="detail-card">
+          <h1>Fargo / Shipox Control Tower</h1>
+          <p>Загружаю живой snapshot из Mongo...</p>
+        </section>
+      </main>
+    )
+  }
+
+  return <DashboardApp snapshot={snapshot} />
+}
+
+export default App

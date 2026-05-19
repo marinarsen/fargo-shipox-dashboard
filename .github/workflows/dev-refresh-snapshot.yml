@@ -1,0 +1,33 @@
+name: DEV Refresh Snapshot
+
+on:
+  workflow_dispatch:
+  schedule:
+    - cron: "30 2,9,15 * * *"
+
+jobs:
+  build-dev-snapshot:
+    runs-on: windows-latest
+    timeout-minutes: 30
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: npm
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Build DEV sample snapshot
+        run: npm run etl:sample:dev
+
+      - name: Upload DEV snapshot artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: dev-snapshot
+          path: artifacts/dev/latest-snapshot.json
+          if-no-files-found: error
