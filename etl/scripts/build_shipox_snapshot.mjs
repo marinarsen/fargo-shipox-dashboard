@@ -24,6 +24,8 @@ function parseArgs(argv) {
     from: process.env.SNAPSHOT_FROM_SHIPOX || '2026-01-01 00:00',
     pageSize: Number(process.env.SHIPOX_PAGE_SIZE || 200),
     limitPages: Number(process.env.SHIPOX_LIMIT_PAGES || 0),
+    concurrency: Number(process.env.SHIPOX_CONCURRENCY || 4),
+    requestTimeoutMs: Number(process.env.SHIPOX_REQUEST_TIMEOUT_MS || 120000),
     customerId: process.env.SHIPOX_CUSTOMER_ID || '',
     pagesJsonl: '',
   }
@@ -36,6 +38,10 @@ function parseArgs(argv) {
     else if (arg.startsWith('--page-size=')) options.pageSize = Number(arg.slice('--page-size='.length)) || options.pageSize
     else if (arg === '--limit-pages') options.limitPages = Number(next()) || 0
     else if (arg.startsWith('--limit-pages=')) options.limitPages = Number(arg.slice('--limit-pages='.length)) || 0
+    else if (arg === '--concurrency') options.concurrency = Number(next()) || options.concurrency
+    else if (arg.startsWith('--concurrency=')) options.concurrency = Number(arg.slice('--concurrency='.length)) || options.concurrency
+    else if (arg === '--request-timeout-ms') options.requestTimeoutMs = Number(next()) || options.requestTimeoutMs
+    else if (arg.startsWith('--request-timeout-ms=')) options.requestTimeoutMs = Number(arg.slice('--request-timeout-ms='.length)) || options.requestTimeoutMs
     else if (arg === '--customer-id') options.customerId = next()
     else if (arg.startsWith('--customer-id=')) options.customerId = arg.slice('--customer-id='.length)
     else if (arg === '--pages-jsonl') options.pagesJsonl = next()
@@ -44,6 +50,8 @@ function parseArgs(argv) {
     else throw new Error(`Unknown argument: ${arg}`)
   }
   options.pageSize = Math.min(Math.max(options.pageSize, 1), 200)
+  options.concurrency = Math.min(Math.max(options.concurrency, 1), 8)
+  options.requestTimeoutMs = Math.min(Math.max(options.requestTimeoutMs, 5000), 120000)
   return options
 }
 
@@ -52,6 +60,7 @@ function printHelp() {
 Usage:
   npm run etl:shipox:snapshot -- --from "2026-01-01 00:00"
   npm run etl:shipox:snapshot -- --limit-pages 2
+  npm run etl:shipox:snapshot -- --limit-pages 480 --concurrency 4 --request-timeout-ms 120000
   npm run etl:shipox:snapshot -- --pages-jsonl "../tez-export/shipox_order_export_fargo_all.pages.jsonl"
 
 Needs .env.local with SHIPOX_USERNAME/SHIPOX_PASSWORD or SHIPOX_ID_TOKEN.
@@ -147,12 +156,12 @@ function riskOf(item) {
   return 'ok'
 }
 
-function emptyRoute(order) {
+function emptyRoute(order, date) {
   const clientName = order?.customer?.name || 'Не определено'
   const city = cityName(order)
   const flow = flowLabel(order)
   return {
-    date: dateKey(order.created_date || order.createdDate),
+    date,
     clientKey: keyFrom(order?.customer?._id || clientName),
     clientName,
     cityKey: keyFrom(city),
@@ -181,7 +190,7 @@ function emptyRoute(order) {
   }
 }
 
-function addOrderToRoute(route, order, snapshotDate) {
+function addOrderToRoute(route, order, snapshotDate, mode) {
   const status = String(order.status || '')
   const isFinal = FINAL.has(status)
   const isDelivered = DELIVERED.has(status)
@@ -193,19 +202,23 @@ function addOrderToRoute(route, order, snapshotDate) {
   const staleAge = daysBetween(updated, snapshotDate)
   route.deliveryVolume += 1
   route.pickupVolume += order.pick_up_warehouse?.name ? 1 : 0
-  route.active += isFinal ? 0 : 1
-  route.delivered += isDelivered ? 1 : 0
-  route.cohortDelivered += isDelivered ? 1 : 0
-  route.cohortReturns += isReturn ? 1 : 0
-  route.returns += isReturn ? 1 : 0
-  route.failed += isFailed ? 1 : 0
-  route.noAttempt2d += !isFinal && age >= 2 && Number(order.deliveryAttemptCount || 0) <= 0 ? 1 : 0
-  route.stale += !isFinal && staleAge >= 2 ? 1 : 0
-  route.tails += !isFinal && age >= 7 ? 1 : 0
+  if (mode === 'cohort') {
+    route.active += isFinal ? 0 : 1
+    route.cohortDelivered += isDelivered ? 1 : 0
+    route.cohortReturns += isReturn ? 1 : 0
+    route.noAttempt2d += !isFinal && age >= 2 && Number(order.deliveryAttemptCount || 0) <= 0 ? 1 : 0
+    route.stale += !isFinal && staleAge >= 2 ? 1 : 0
+    route.tails += !isFinal && age >= 7 ? 1 : 0
+  } else {
+    route.active += !isFinal ? 1 : 0
+    route.delivered += isDelivered ? 1 : 0
+    route.returns += isReturn ? 1 : 0
+    route.failed += isFailed ? 1 : 0
+  }
   if (isDelivered) {
     const deliveryTime = daysBetween(created, updated)
-    route.deliveryTimeSum += deliveryTime
-    route.cohortDeliveryTimeSum += deliveryTime
+    if (mode === 'cohort') route.cohortDeliveryTimeSum += deliveryTime
+    else route.deliveryTimeSum += deliveryTime
   }
 }
 
@@ -213,11 +226,11 @@ async function fetchOrders(options, auth) {
   const orders = []
   let page = 0
   let total = 0
-  while (true) {
+  async function fetchPage(pageNumber) {
     const params = new URLSearchParams({
       size: String(options.pageSize),
       from_date_time: options.from,
-      page: String(page),
+      page: String(pageNumber),
       simple: 'false',
     })
     if (options.customerId) params.set('customer_id', options.customerId)
@@ -228,16 +241,38 @@ async function fetchOrders(options, auth) {
         Authorization: `Bearer ${auth.idToken}`,
         marketplace_id: String(auth.marketplaceId || '307345429'),
       },
-      timeoutMs: Number(process.env.SHIPOX_REQUEST_TIMEOUT_MS || 90000),
+      timeoutMs: options.requestTimeoutMs,
     })
     const list = json?.data?.list || []
-    total = Number(json?.data?.total || total || 0)
-    orders.push(...list)
-    console.log(`Shipox page ${page}: ${list.length}; total fetched ${orders.length}/${total || '?'}`)
-    page += 1
-    if (!list.length) break
+    return {
+      page: pageNumber,
+      list,
+      total: Number(json?.data?.total || 0),
+    }
+  }
+
+  while (true) {
     if (options.limitPages && page >= options.limitPages) break
     if (total && orders.length >= total) break
+
+    const totalPages = total ? Math.ceil(total / options.pageSize) : Number.POSITIVE_INFINITY
+    const targetPages = options.limitPages ? Math.min(options.limitPages, totalPages) : totalPages
+    const pages = []
+    for (let p = page; p < targetPages && pages.length < options.concurrency; p += 1) {
+      pages.push(p)
+    }
+    if (!pages.length) break
+
+    const fetched = await Promise.all(pages.map((pageNumber) => fetchPage(pageNumber)))
+    fetched.sort((a, b) => a.page - b.page)
+    for (const result of fetched) {
+      total = Number(result.total || total || 0)
+      orders.push(...result.list)
+      page = result.page + 1
+      console.log(`Shipox page ${result.page}: ${result.list.length}; total fetched ${orders.length}/${total || '?'}`)
+      if (!result.list.length) return { orders, total, pages: page }
+      if (total && orders.length >= total) return { orders, total, pages: page }
+    }
   }
   return { orders, total, pages: page }
 }
@@ -286,13 +321,16 @@ function aggregateRoutes(routes, kind) {
       deliveryDelta: 0,
       deliveryTimeSum: 0,
       firstAttemptTimeSum: 0,
+      cohortDelivered: 0,
+      cohortReturns: 0,
+      cohortDeliveryTimeSum: 0,
       noAttempt2d: 0,
       stale: 0,
       tails: 0,
       returns: 0,
       failed: 0,
     }
-    for (const field of ['active', 'delivered', 'pickupVolume', 'deliveryVolume', 'deliveryTimeSum', 'firstAttemptTimeSum', 'noAttempt2d', 'stale', 'tails', 'returns', 'failed']) {
+    for (const field of ['active', 'delivered', 'cohortDelivered', 'cohortReturns', 'pickupVolume', 'deliveryVolume', 'deliveryTimeSum', 'firstAttemptTimeSum', 'cohortDeliveryTimeSum', 'noAttempt2d', 'stale', 'tails', 'returns', 'failed']) {
       item[field] += route[field] || 0
     }
     map.set(key, item)
@@ -301,6 +339,7 @@ function aggregateRoutes(routes, kind) {
     ...item,
     deliveryTime: item.delivered ? item.deliveryTimeSum / item.delivered : 0,
     firstAttemptTime: item.delivered ? item.firstAttemptTimeSum / item.delivered : 0,
+    cohortDeliveryTime: item.cohortDelivered ? item.cohortDeliveryTimeSum / item.cohortDelivered : 0,
     share: 0,
     risk: riskOf(item),
   }))
@@ -353,16 +392,28 @@ async function main() {
     ? await readOrdersFromPagesJsonl(options.pagesJsonl)
     : await fetchOrders(options, await getAuth())
   const snapshotDate = fetched.orders.map((order) => order.last_status_date || order.created_date).filter(Boolean).sort().at(-1) || new Date().toISOString()
-  const routes = new Map()
+  const eventRoutes = new Map()
+  const cohortRouteMap = new Map()
   for (const order of fetched.orders) {
-    const base = emptyRoute(order)
-    if (!base.date) continue
-    const key = `${base.date}|${base.clientKey}|${base.cityKey}|${base.flowKey}`
-    const route = routes.get(key) || base
-    addOrderToRoute(route, order, snapshotDate)
-    routes.set(key, route)
+    const eventDate = dateKey(order.last_status_date || order.lastStatusDate || order.created_date || order.createdDate)
+    const cohortDate = dateKey(order.created_date || order.createdDate)
+    if (eventDate) {
+      const base = emptyRoute(order, eventDate)
+      const key = `${base.date}|${base.clientKey}|${base.cityKey}|${base.flowKey}`
+      const route = eventRoutes.get(key) || base
+      addOrderToRoute(route, order, snapshotDate, 'event')
+      eventRoutes.set(key, route)
+    }
+    if (cohortDate) {
+      const base = emptyRoute(order, cohortDate)
+      const key = `${base.date}|${base.clientKey}|${base.cityKey}|${base.flowKey}`
+      const route = cohortRouteMap.get(key) || base
+      addOrderToRoute(route, order, snapshotDate, 'cohort')
+      cohortRouteMap.set(key, route)
+    }
   }
-  const dailyRoutes = [...routes.values()]
+  const dailyRoutes = [...eventRoutes.values()]
+  const cohortRoutes = [...cohortRouteMap.values()]
   const clients = aggregateRoutes(dailyRoutes, 'client').sort((a, b) => b.deliveryVolume - a.deliveryVolume).slice(0, 500)
   const cities = aggregateRoutes(dailyRoutes, 'city').sort((a, b) => b.deliveryVolume - a.deliveryVolume).slice(0, 500)
   const regions = aggregateRoutes(dailyRoutes, 'region').sort((a, b) => b.deliveryVolume - a.deliveryVolume)
@@ -405,9 +456,10 @@ async function main() {
     orders: buildOrders(fetched.orders, snapshotDate),
     dailyMetrics: [],
     dailyRoutes,
+    cohortRoutes,
   }
   await writeSnapshot(snapshot)
-  console.log(JSON.stringify({ ok: true, source: options.pagesJsonl ? 'shipox_pages_jsonl' : 'shipox', orders: fetched.orders.length, totalReported: fetched.total, pages: fetched.pages, routes: dailyRoutes.length, out: OUT_JSON }, null, 2))
+  console.log(JSON.stringify({ ok: true, source: options.pagesJsonl ? 'shipox_pages_jsonl' : 'shipox', orders: fetched.orders.length, totalReported: fetched.total, pages: fetched.pages, routes: dailyRoutes.length, cohortRoutes: cohortRoutes.length, out: OUT_JSON }, null, 2))
 }
 
 main().catch((error) => {

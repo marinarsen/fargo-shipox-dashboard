@@ -78,7 +78,7 @@
 .client-tools {
   display: flex;
   flex-wrap: wrap;
-  justify-content: flex-end;
+  justify-content: flex-start;
   gap: 8px;
 }
 
@@ -273,9 +273,9 @@ h2 {
 
 .main-grid {
   display: grid;
-  grid-template-columns: minmax(0, 1fr) 360px;
+  grid-template-columns: minmax(0, 1fr);
   gap: 14px;
-  padding: 14px 18px 22px;
+  padding: 10px 18px 22px;
 }
 
 .work-area {
@@ -287,6 +287,7 @@ h2 {
 .section-head {
   justify-content: space-between;
   gap: 12px;
+  flex-wrap: wrap;
 }
 
 .compact {
@@ -541,6 +542,7 @@ h2 {
 
 .inspector {
   display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(300px, 1fr));
   align-content: start;
   gap: 12px;
   min-width: 0;

@@ -55,7 +55,46 @@ npm run etl:shipox:probe -- --page-size 5
 artifacts\shipox-probe\latest-probe.json
 ```
 
-## 3. Обновить сайт из Shipox
+## 3. Обновить сайт через GitHub
+
+Самый простой способ:
+
+1. Открыть `marinarsen/fargo-shipox-dashboard`.
+2. Перейти в `Actions`.
+3. Выбрать `Обновить dashboard из Shipox`.
+4. Нажать `Run workflow`.
+
+Ничего вводить не нужно. Внутри уже стоит рабочий быстрый режим:
+
+```text
+from: 2026-01-01 00:00
+limit_pages: 480
+concurrency: 4
+request_timeout_ms: 120000
+```
+
+Сайт обновится сам после завершения workflow.
+
+Один раз нужно добавить секреты в этом же репозитории:
+
+```text
+Settings -> Secrets and variables -> Actions -> New repository secret
+```
+
+Минимум:
+
+```text
+SHIPOX_USERNAME
+SHIPOX_PASSWORD
+```
+
+Можно вместо них:
+
+```text
+SHIPOX_ID_TOKEN
+```
+
+## 4. Обновить сайт локально из Shipox
 
 После успешной проверки:
 

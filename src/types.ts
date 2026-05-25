@@ -219,4 +219,5 @@ export type DashboardSnapshot = {
   orders: OrderRecord[]
   dailyMetrics?: DailyMetric[]
   dailyRoutes?: DailyRouteMetric[]
+  cohortRoutes?: DailyRouteMetric[]
 }

@@ -335,7 +335,11 @@ function DashboardApp({ snapshot }: { snapshot: DashboardSnapshot }) {
     return { from: addDays(currentRange.from, -length), to: addDays(currentRange.from, -1) }
   }, [currentRange.from, currentRange.to])
 
-  const allRoutes = useMemo(() => snapshot.dailyRoutes || [], [snapshot.dailyRoutes])
+  const allRoutes = useMemo(() => (
+    analysisMode === 'cohort'
+      ? snapshot.cohortRoutes || snapshot.dailyRoutes || []
+      : snapshot.dailyRoutes || []
+  ), [analysisMode, snapshot.cohortRoutes, snapshot.dailyRoutes])
   const routes = useMemo(() => {
     return allRoutes.filter((route) => {
       if (route.date < currentRange.from || route.date > currentRange.to) return false
@@ -398,14 +402,14 @@ function DashboardApp({ snapshot }: { snapshot: DashboardSnapshot }) {
   const maxRegionActive = Math.max(1, ...regions.map((item) => item.deliveryVolume))
   const maxFlowActive = Math.max(1, ...flows.map((item) => item.deliveryVolume))
 
-  const totalDelivered = routes.reduce((sum, item) => sum + item.delivered, 0)
+  const isCohort = analysisMode === 'cohort'
+  const totalDelivered = routes.reduce((sum, item) => sum + (isCohort ? item.cohortDelivered || 0 : item.delivered), 0)
   const totalNoAttempt = routes.reduce((sum, item) => sum + item.noAttempt2d, 0)
-  const totalTails = routes.reduce((sum, item) => sum + item.tails, 0)
   const totalPickup = routes.reduce((sum, item) => sum + item.pickupVolume, 0)
   const totalDelivery = routes.reduce((sum, item) => sum + item.deliveryVolume, 0)
-  const totalDeliveryTime = routes.reduce((sum, item) => sum + item.deliveryTimeSum, 0)
+  const totalReturns = routes.reduce((sum, item) => sum + (isCohort ? item.cohortReturns || 0 : item.returns), 0)
+  const totalDeliveryTime = routes.reduce((sum, item) => sum + (isCohort ? item.cohortDeliveryTimeSum || 0 : item.deliveryTimeSum), 0)
   const avgDt = totalDelivered ? totalDeliveryTime / totalDelivered : 0
-  const isCohort = analysisMode === 'cohort'
   const prevPickup = previousRoutes.reduce((sum, item) => sum + item.pickupVolume, 0)
   const prevDelivery = previousRoutes.reduce((sum, item) => sum + item.deliveryVolume, 0)
   const selectedRangeLabel = rangeLabel(currentRange.from, currentRange.to)
@@ -415,14 +419,14 @@ function DashboardApp({ snapshot }: { snapshot: DashboardSnapshot }) {
   const deltaText = (value: number) => (hasPreviousData ? formatDelta(value) : 'без сравнения')
 
   const kpis: Kpi[] = [
-    { key: 'created', label: 'Создано заказов', value: formatNumber(totalDelivery), delta: selectedRangeLabel, risk: 'ok' },
+    { key: 'created', label: isCohort ? 'Создано заказов' : 'Заказов со статусом', value: formatNumber(totalDelivery), delta: selectedRangeLabel, risk: 'ok' },
     { key: 'delivered', label: 'Доставлено', value: formatNumber(totalDelivered), delta: selectedRangeLabel, risk: 'ok' },
     { key: 'pickup', label: 'Из ПВЗ / прием', value: formatNumber(totalPickup), delta: pickupComparison, risk: 'ok' },
     { key: 'delivery', label: 'В город доставки', value: formatNumber(totalDelivery), delta: deliveryComparison, risk: 'ok' },
     { key: 'dt', label: 'Delivery time', value: `${avgDt.toFixed(1)} дн`, delta: avgDt > 4 ? 'хуже нормы' : 'в норме', risk: avgDt > 4 ? 'risk' : 'ok' },
     { key: 'attempt', label: 'До 1-й попытки', value: 'н/д', delta: 'нужен расчет из webhook', risk: 'watch' },
     { key: 'no_attempt', label: 'Без попытки 2+ дня', value: formatNumber(totalNoAttempt), delta: 'нужен ручной контроль', risk: totalNoAttempt > 250 ? 'critical' : 'watch' },
-    { key: 'tails', label: 'Старые хвосты', value: formatNumber(totalTails), delta: 'старые активные заказы', risk: totalTails > 500 ? 'risk' : 'watch' },
+    { key: 'returns', label: 'Возвраты', value: formatNumber(totalReturns), delta: isCohort ? 'по созданным заказам' : 'по событиям статуса', risk: totalReturns > 500 ? 'risk' : 'watch' },
   ]
 
   return (
@@ -500,7 +504,7 @@ function DashboardApp({ snapshot }: { snapshot: DashboardSnapshot }) {
             <table className="smart-table">
               <thead>
                 <tr>
-                  <th>Клиент</th><th>Создано</th><th>Доставлено</th><th>DT</th><th>{isCohort ? 'Доля доставки' : 'Нет попытки'}</th><th>{isCohort ? 'Возвраты когорты' : 'Нет статуса'}</th><th>Хвосты</th><th>Возвраты</th><th>Failed</th>
+                  <th>Клиент</th><th>{isCohort ? 'Создано' : 'Статусов'}</th><th>Доставлено</th><th>DT</th><th>{isCohort ? 'Доля доставки' : 'Нет попытки'}</th><th>{isCohort ? 'Возвраты когорты' : 'Нет статуса'}</th><th>Хвосты</th><th>Возвраты</th><th>Failed</th>
                 </tr>
               </thead>
               <tbody>
@@ -512,7 +516,7 @@ function DashboardApp({ snapshot }: { snapshot: DashboardSnapshot }) {
                     <td>{(isCohort ? item.cohortDeliveryTime || 0 : item.deliveryTime).toFixed(1)}</td>
                     <td>{isCohort ? `${Math.round(((item.cohortDelivered || 0) / Math.max(1, item.deliveryVolume || 0)) * 1000) / 10}%` : formatNumber(item.noAttempt2d)}</td>
                     <td>{isCohort ? formatNumber(item.cohortReturns || 0) : formatNumber(item.stale)}</td>
-                    <td>{formatNumber(item.tails)}</td><td>{formatNumber(item.returns)}</td><td>{formatNumber(item.failed)}</td>
+                    <td>{formatNumber(item.tails)}</td><td>{formatNumber(isCohort ? item.cohortReturns || 0 : item.returns)}</td><td>{formatNumber(item.failed)}</td>
                   </tr>
                 ))}
               </tbody>
