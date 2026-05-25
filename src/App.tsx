@@ -75,7 +75,7 @@ const statusMetric: Record<string, StatusMetricKey> = {
   returns: 'returns',
 }
 
-const TODAY = '2026-05-18'
+const DEFAULT_TODAY = '2026-05-25'
 
 function formatNumber(value: number) {
   return Math.round(value).toLocaleString('ru-RU')
@@ -121,30 +121,30 @@ function normalizeRange(range: { from: string; to: string }) {
   return { from: range.to, to: range.from }
 }
 
-function getPresetRange(period: string) {
-  if (period === 'today') return { from: TODAY, to: TODAY }
-  if (period === 'yesterday') return { from: addDays(TODAY, -1), to: addDays(TODAY, -1) }
-  if (period === 'last7') return { from: addDays(TODAY, -6), to: TODAY }
-  if (period === 'last30') return { from: addDays(TODAY, -29), to: TODAY }
-  if (period === 'may') return { from: '2026-05-01', to: TODAY }
-  return { from: '2026-01-01', to: TODAY }
+function getPresetRange(period: string, today: string) {
+  if (period === 'today') return { from: today, to: today }
+  if (period === 'yesterday') return { from: addDays(today, -1), to: addDays(today, -1) }
+  if (period === 'last7') return { from: addDays(today, -6), to: today }
+  if (period === 'last30') return { from: addDays(today, -29), to: today }
+  if (period === 'may') return { from: '2026-05-01', to: today }
+  return { from: '2026-01-01', to: today }
 }
 
-function getMonthRange(month: string) {
+function getMonthRange(month: string, today: string) {
   const [year, monthNumber] = month.split('-').map(Number)
   const from = `${month}-01`
   const lastDay = new Date(Date.UTC(year, monthNumber, 0)).toISOString().slice(0, 10)
-  return { from, to: lastDay > TODAY ? TODAY : lastDay }
+  return { from, to: lastDay > today ? today : lastDay }
 }
 
-function getWeekRange(week: string) {
+function getWeekRange(week: string, today: string) {
   const [, weekText] = week.split('-W')
   const firstThursday = new Date(Date.UTC(2026, 0, 1))
   const start = new Date(firstThursday)
   start.setUTCDate(firstThursday.getUTCDate() + (Number(weekText) - 1) * 7 - 3)
   const end = new Date(start)
   end.setUTCDate(start.getUTCDate() + 6)
-  return { from: toIsoDate(start), to: toIsoDate(end) > TODAY ? TODAY : toIsoDate(end) }
+  return { from: toIsoDate(start), to: toIsoDate(end) > today ? today : toIsoDate(end) }
 }
 
 function routeMatchesStatus(route: DailyRouteMetric, status: string) {
@@ -297,7 +297,16 @@ function orderMatchesStatus(order: OrderRecord, status: string) {
   return true
 }
 
+function latestSnapshotDate(snapshot: DashboardSnapshot) {
+  const dates = [
+    ...(snapshot.dailyRoutes || []).map((route) => route.date),
+    ...snapshot.orders.map((order) => order.createdAt.slice(0, 10)),
+  ].filter(Boolean)
+  return dates.sort().at(-1) || DEFAULT_TODAY
+}
+
 function DashboardApp({ snapshot }: { snapshot: DashboardSnapshot }) {
+  const today = useMemo(() => latestSnapshotDate(snapshot), [snapshot])
   const [period, setPeriod] = useState(snapshot.periodOptions[0].key)
   const [status, setStatus] = useState(snapshot.statusOptions[0].key)
   const [client, setClient] = useState('all')
@@ -310,16 +319,16 @@ function DashboardApp({ snapshot }: { snapshot: DashboardSnapshot }) {
   const [month, setMonth] = useState('2026-05')
   const [week, setWeek] = useState('2026-W20')
   const [dateFrom, setDateFrom] = useState('2026-05-01')
-  const [dateTo, setDateTo] = useState(TODAY)
+  const [dateTo, setDateTo] = useState(today)
   const initialDetail = snapshot.clients[0] || ({ key: 'none', name: 'Нет данных' } as ClientMetric)
   const [detail, setDetail] = useState<DetailTarget>({ kind: 'client', item: initialDetail })
 
   const currentRange = useMemo(() => {
-    if (periodMode === 'month') return normalizeRange(getMonthRange(month))
-    if (periodMode === 'week') return normalizeRange(getWeekRange(week))
+    if (periodMode === 'month') return normalizeRange(getMonthRange(month, today))
+    if (periodMode === 'week') return normalizeRange(getWeekRange(week, today))
     if (periodMode === 'range') return normalizeRange({ from: dateFrom, to: dateTo })
-    return normalizeRange(getPresetRange(period))
-  }, [dateFrom, dateTo, month, period, periodMode, week])
+    return normalizeRange(getPresetRange(period, today))
+  }, [dateFrom, dateTo, month, period, periodMode, today, week])
 
   const previousRange = useMemo(() => {
     const length = daysBetween(currentRange.from, currentRange.to)
@@ -421,7 +430,7 @@ function DashboardApp({ snapshot }: { snapshot: DashboardSnapshot }) {
       <div className="sticky-command">
         <header className="topbar">
           <div className="brand-block">
-            <img className="brand-logo" src="/fargo-logo-original.png" alt="Fargo Parcel Service" />
+            <img className="brand-logo" src={`${import.meta.env.BASE_URL}fargo-logo-original.png`} alt="Fargo Parcel Service" />
             <div>
               <h1>Fargo / Shipox Control Tower</h1>
               <p>Операционный контроль доставки, приема, ПВЗ, городов, клиентов и ответственных менеджеров</p>
@@ -442,9 +451,9 @@ function DashboardApp({ snapshot }: { snapshot: DashboardSnapshot }) {
             <button className={periodMode === 'range' ? 'active' : ''} type="button" onClick={() => setPeriodMode('range')}>Точный отрезок</button>
           </div>
           {periodMode === 'preset' && <label><CalendarDays size={16} /><span>Период</span><select value={period} onChange={(event) => setPeriod(event.target.value)}>{snapshot.periodOptions.map((item) => <option value={item.key} key={item.key}>{item.label}</option>)}</select></label>}
-          {periodMode === 'month' && <label><CalendarDays size={16} /><span>Месяц</span><input type="month" value={month} max="2026-05" onChange={(event) => setMonth(event.target.value)} /></label>}
-          {periodMode === 'week' && <label><CalendarDays size={16} /><span>Неделя</span><input type="week" value={week} max="2026-W21" onChange={(event) => setWeek(event.target.value)} /></label>}
-          {periodMode === 'range' && <><label><CalendarDays size={16} /><span>С</span><input type="date" value={dateFrom} min="2026-01-01" max={TODAY} onChange={(event) => setDateFrom(event.target.value)} /></label><label><CalendarDays size={16} /><span>По</span><input type="date" value={dateTo} min="2026-01-01" max={TODAY} onChange={(event) => setDateTo(event.target.value)} /></label></>}
+          {periodMode === 'month' && <label><CalendarDays size={16} /><span>Месяц</span><input type="month" value={month} max={today.slice(0, 7)} onChange={(event) => setMonth(event.target.value)} /></label>}
+          {periodMode === 'week' && <label><CalendarDays size={16} /><span>Неделя</span><input type="week" value={week} onChange={(event) => setWeek(event.target.value)} /></label>}
+          {periodMode === 'range' && <><label><CalendarDays size={16} /><span>С</span><input type="date" value={dateFrom} min="2026-01-01" max={today} onChange={(event) => setDateFrom(event.target.value)} /></label><label><CalendarDays size={16} /><span>По</span><input type="date" value={dateTo} min="2026-01-01" max={today} onChange={(event) => setDateTo(event.target.value)} /></label></>}
           <button className="quick-period" type="button" onClick={() => { setPeriodMode('preset'); setPeriod('last7') }}>7 дней</button>
           <button className="quick-period" type="button" onClick={() => { setPeriodMode('preset'); setPeriod('last30') }}>30 дней</button>
           <button className="quick-period" type="button" onClick={() => { setPeriodMode('preset'); setPeriod('y2026') }}>2026</button>
@@ -646,7 +655,7 @@ function App() {
 
   useEffect(() => {
     let mounted = true
-    fetch('/generatedSnapshot.json')
+    fetch(`${import.meta.env.BASE_URL}generatedSnapshot.json`)
       .then((response) => response.json())
       .then((data: DashboardSnapshot) => {
         if (mounted) setSnapshot(data)

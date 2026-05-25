@@ -10,6 +10,8 @@
     "preview": "vite preview",
     "etl:sample:dev": "node ./etl/scripts/collect_snapshot.mjs --env dev --sample",
     "etl:sample:prod": "node ./etl/scripts/collect_snapshot.mjs --env prod --sample",
+    "etl:shipox:probe": "node ./etl/scripts/probe_shipox_orders.mjs",
+    "etl:shipox:snapshot": "node ./etl/scripts/build_shipox_snapshot.mjs",
     "etl:local:snapshot": "node ./etl/scripts/build_local_snapshot.mjs",
     "etl:mongo:snapshot": "node ./etl/scripts/build_mongo_snapshot.mjs"
   },
