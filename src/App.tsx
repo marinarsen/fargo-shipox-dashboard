@@ -460,7 +460,7 @@ function DashboardApp({ snapshot }: { snapshot: DashboardSnapshot }) {
           {periodMode === 'range' && <><label><CalendarDays size={16} /><span>С</span><input type="date" value={dateFrom} min="2026-01-01" max={today} onChange={(event) => setDateFrom(event.target.value)} /></label><label><CalendarDays size={16} /><span>По</span><input type="date" value={dateTo} min="2026-01-01" max={today} onChange={(event) => setDateTo(event.target.value)} /></label></>}
           <button className="quick-period" type="button" onClick={() => { setPeriodMode('preset'); setPeriod('last7') }}>7 дней</button>
           <button className="quick-period" type="button" onClick={() => { setPeriodMode('preset'); setPeriod('last30') }}>30 дней</button>
-          <button className="quick-period" type="button" onClick={() => { setPeriodMode('preset'); setPeriod('y2026') }}>2026</button>
+          <button className="quick-period" type="button" onClick={() => { setPeriodMode('preset'); setPeriod('y2026') }}>Все</button>
         </section>
 
         <section className="control-strip" aria-label="Фильтры">

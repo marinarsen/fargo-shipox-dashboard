@@ -602,12 +602,14 @@ async function main() {
     owner: item.manager || 'Операции',
     risk: item.risk,
   }))
+  const loadedTo = options.to || `${formatDate(new Date())} 23:59`
+  const loadedRangeLabel = `${String(options.from).slice(0, 10)} - ${String(loadedTo).slice(0, 10)}`
   const snapshot = {
     generatedAt: `${formatTashkentNow()} Asia/Tashkent`,
     environment: 'DEV',
     sourceMode: 'pipeline',
     periodOptions: [
-      { key: 'y2026', label: 'Весь 2026', rangeLabel: '01.01.2026 - сегодня' },
+      { key: 'y2026', label: 'Все загруженные данные', rangeLabel: loadedRangeLabel },
       { key: 'today', label: 'Сегодня', rangeLabel: 'Сегодня' },
       { key: 'yesterday', label: 'Вчера', rangeLabel: 'Вчера' },
       { key: 'last7', label: '7 дней', rangeLabel: 'Последние 7 дней' },
