@@ -17,13 +17,15 @@ concurrency:
 jobs:
   update-and-deploy:
     runs-on: ubuntu-latest
-    timeout-minutes: 40
+    timeout-minutes: 90
     environment:
       name: github-pages
       url: ${{ steps.deployment.outputs.page_url }}
     env:
       SNAPSHOT_FROM_SHIPOX: "2026-01-01 00:00"
-      SHIPOX_LIMIT_PAGES: "480"
+      SNAPSHOT_TO_SHIPOX: "2026-12-31 23:59"
+      SHIPOX_CHUNK_DAYS: "14"
+      SHIPOX_LIMIT_PAGES: "0"
       SHIPOX_CONCURRENCY: "4"
       SHIPOX_REQUEST_TIMEOUT_MS: "120000"
       SHIPOX_MARKETPLACE_ID: "307345429"

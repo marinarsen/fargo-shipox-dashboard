@@ -13,6 +13,8 @@ const OUT_TS = path.join(ROOT, 'src', 'data', 'generatedSnapshot.ts')
 const OUT_SRC_JSON = path.join(ROOT, 'src', 'data', 'generatedSnapshot.json')
 const OUT_PUBLIC_JSON = path.join(ROOT, 'public', 'generatedSnapshot.json')
 const OUT_JSON = path.join(ROOT, 'artifacts', 'dev', 'shipox-snapshot.json')
+const CITIES_CSV_URL = process.env.CITIES_CSV_URL || 'https://docs.google.com/spreadsheets/d/13BEV_oYxVfuBytV8iJsTQnUB7VcPUeAM1MgU5RiKKoA/export?format=csv&gid=523447778'
+const WAREHOUSE_MANAGERS_CSV_URL = process.env.WAREHOUSE_MANAGERS_CSV_URL || 'https://docs.google.com/spreadsheets/d/13BEV_oYxVfuBytV8iJsTQnUB7VcPUeAM1MgU5RiKKoA/export?format=csv&gid=1959131115'
 
 const FINAL = new Set(['completed', 'issued', 'cancelled', 'cancelled_due_to_out_of_delivery_area', 'returned_to_origin', 'destroyed_on_customer_request', 'lost'])
 const DELIVERED = new Set(['completed', 'issued'])
@@ -22,6 +24,8 @@ const FAILED = new Set(['delivery_failed', 'delivery_rejected', 'recipient_mobil
 function parseArgs(argv) {
   const options = {
     from: process.env.SNAPSHOT_FROM_SHIPOX || '2026-01-01 00:00',
+    to: process.env.SNAPSHOT_TO_SHIPOX || '',
+    chunkDays: Number(process.env.SHIPOX_CHUNK_DAYS || 14),
     pageSize: Number(process.env.SHIPOX_PAGE_SIZE || 200),
     limitPages: Number(process.env.SHIPOX_LIMIT_PAGES || 0),
     concurrency: Number(process.env.SHIPOX_CONCURRENCY || 4),
@@ -34,6 +38,10 @@ function parseArgs(argv) {
     const next = () => String(argv[++i] || '')
     if (arg === '--from') options.from = next()
     else if (arg.startsWith('--from=')) options.from = arg.slice('--from='.length)
+    else if (arg === '--to') options.to = next()
+    else if (arg.startsWith('--to=')) options.to = arg.slice('--to='.length)
+    else if (arg === '--chunk-days') options.chunkDays = Number(next()) || options.chunkDays
+    else if (arg.startsWith('--chunk-days=')) options.chunkDays = Number(arg.slice('--chunk-days='.length)) || options.chunkDays
     else if (arg === '--page-size') options.pageSize = Number(next()) || options.pageSize
     else if (arg.startsWith('--page-size=')) options.pageSize = Number(arg.slice('--page-size='.length)) || options.pageSize
     else if (arg === '--limit-pages') options.limitPages = Number(next()) || 0
@@ -51,6 +59,7 @@ function parseArgs(argv) {
   }
   options.pageSize = Math.min(Math.max(options.pageSize, 1), 200)
   options.concurrency = Math.min(Math.max(options.concurrency, 1), 8)
+  options.chunkDays = Math.min(Math.max(options.chunkDays, 1), 31)
   options.requestTimeoutMs = Math.min(Math.max(options.requestTimeoutMs, 5000), 120000)
   return options
 }
@@ -59,6 +68,7 @@ function printHelp() {
   console.log(`
 Usage:
   npm run etl:shipox:snapshot -- --from "2026-01-01 00:00"
+  npm run etl:shipox:snapshot -- --from "2026-01-01 00:00" --to "2026-12-31 23:59" --chunk-days 14
   npm run etl:shipox:snapshot -- --limit-pages 2
   npm run etl:shipox:snapshot -- --limit-pages 480 --concurrency 4 --request-timeout-ms 120000
   npm run etl:shipox:snapshot -- --pages-jsonl "../tez-export/shipox_order_export_fargo_all.pages.jsonl"
@@ -124,6 +134,111 @@ function keyFrom(value) {
   return String(value || 'unknown').toLowerCase().replace(/[^a-zа-я0-9]+/gi, '-').replace(/^-|-$/g, '')
 }
 
+function cleanText(value) {
+  return String(value || '').replace(/\s+/g, ' ').trim()
+}
+
+function normalizeLookup(value) {
+  return cleanText(value)
+    .toUpperCase()
+    .replace(/[`’ʻ]/g, "'")
+    .replace(/[^A-ZА-Я0-9']/g, '')
+}
+
+function warehouseKey(value) {
+  return normalizeLookup(
+    String(value || '')
+      .replace(/^\s*\d+\s+/, '')
+      .replace(/\bWAREHOUSE\b/gi, '')
+      .replace(/\bFARGO\s+OFFICE\b/gi, '')
+      .replace(/\bOFFICE\b/gi, '')
+  )
+}
+
+function parseCsv(text) {
+  const rows = []
+  let row = []
+  let cell = ''
+  let quoted = false
+  for (let i = 0; i < text.length; i += 1) {
+    const char = text[i]
+    const next = text[i + 1]
+    if (quoted) {
+      if (char === '"' && next === '"') {
+        cell += '"'
+        i += 1
+      } else if (char === '"') {
+        quoted = false
+      } else {
+        cell += char
+      }
+    } else if (char === '"') {
+      quoted = true
+    } else if (char === ',') {
+      row.push(cell)
+      cell = ''
+    } else if (char === '\n') {
+      row.push(cell)
+      rows.push(row)
+      row = []
+      cell = ''
+    } else if (char !== '\r') {
+      cell += char
+    }
+  }
+  row.push(cell)
+  rows.push(row)
+  return rows.filter((items) => items.some((item) => cleanText(item)))
+}
+
+async function fetchCsv(url) {
+  const response = await fetch(url)
+  if (!response.ok) throw new Error(`CSV fetch failed ${response.status}: ${url}`)
+  return parseCsv(await response.text())
+}
+
+async function loadReferences() {
+  const [cityRows, managerRows] = await Promise.all([
+    fetchCsv(CITIES_CSV_URL),
+    fetchCsv(WAREHOUSE_MANAGERS_CSV_URL),
+  ])
+  const cityToWarehouse = new Map()
+  for (const row of cityRows.slice(1)) {
+    const city = cleanText(row[0])
+    const warehouse = cleanText(row[1])
+    if (city && warehouse) cityToWarehouse.set(normalizeLookup(city), warehouse)
+  }
+  const warehouseManagers = new Map()
+  for (const row of managerRows.slice(1)) {
+    const warehouse = cleanText(row[0])
+    if (!warehouse) continue
+    warehouseManagers.set(warehouseKey(warehouse), {
+      warehouse,
+      region: cleanText(row[1]) || warehouse,
+      availabilityLagDays: Number(row[2]) || 1,
+      manager: cleanText(row[3]) || 'Не назначен',
+      email: cleanText(row[4]),
+      ccEmail: cleanText(row[5]),
+      tailSlaDays: Number(row[6]) || 7,
+      responseDeadlineHours: Number(row[7]) || 24,
+    })
+  }
+  return { cityToWarehouse, warehouseManagers }
+}
+
+function formatTashkentNow() {
+  return new Intl.DateTimeFormat('ru-RU', {
+    timeZone: 'Asia/Tashkent',
+    year: 'numeric',
+    month: '2-digit',
+    day: '2-digit',
+    hour: '2-digit',
+    minute: '2-digit',
+    second: '2-digit',
+    hour12: false,
+  }).format(new Date())
+}
+
 function asDate(value) {
   const date = new Date(value || '')
   return Number.isNaN(date.getTime()) ? null : date
@@ -141,8 +256,23 @@ function daysBetween(from, to) {
   return (b.getTime() - a.getTime()) / 86400000
 }
 
-function cityName(order) {
-  return order?.aPackage?.toCity || order?.destination_warehouse?.name || 'Не определено'
+function getWarehouseMeta(rawCity, references) {
+  const city = cleanText(rawCity)
+  const mappedWarehouse = references.cityToWarehouse.get(normalizeLookup(city))
+  const warehouse = mappedWarehouse || cleanText(city.replace(/^\s*\d+\s+/, '').replace(/\bWAREHOUSE\b/gi, '')) || 'Не определено'
+  const manager = references.warehouseManagers.get(warehouseKey(warehouse)) || references.warehouseManagers.get(normalizeLookup(warehouse))
+  return {
+    city: cleanText(warehouse),
+    region: manager?.region || cleanText(warehouse),
+    manager: manager?.manager || 'Не назначен',
+    email: manager?.email || '',
+    availabilityLagDays: manager?.availabilityLagDays || 1,
+  }
+}
+
+function cityName(order, references) {
+  const rawCity = order?.aPackage?.toCity || order?.destination_warehouse?.name || 'Не определено'
+  return getWarehouseMeta(rawCity, references).city
 }
 
 function flowLabel(order) {
@@ -156,9 +286,11 @@ function riskOf(item) {
   return 'ok'
 }
 
-function emptyRoute(order, date) {
+function emptyRoute(order, date, references) {
   const clientName = order?.customer?.name || 'Не определено'
-  const city = cityName(order)
+  const rawCity = order?.aPackage?.toCity || order?.destination_warehouse?.name || 'Не определено'
+  const cityMeta = getWarehouseMeta(rawCity, references)
+  const city = cityMeta.city
   const flow = flowLabel(order)
   return {
     date,
@@ -166,11 +298,11 @@ function emptyRoute(order, date) {
     clientName,
     cityKey: keyFrom(city),
     cityName: city,
-    regionKey: keyFrom(city),
-    regionName: city,
-    manager: 'Не назначен',
-    email: '',
-    availabilityLagDays: 1,
+    regionKey: keyFrom(cityMeta.region),
+    regionName: cityMeta.region,
+    manager: cityMeta.manager,
+    email: cityMeta.email,
+    availabilityLagDays: cityMeta.availabilityLagDays,
     flowKey: keyFrom(flow),
     flowLabel: flow,
     active: 0,
@@ -222,17 +354,47 @@ function addOrderToRoute(route, order, snapshotDate, mode) {
   }
 }
 
+function parseShipoxDate(value) {
+  const [datePart, timePart = '00:00'] = String(value).split(' ')
+  const [year, month, day] = datePart.split('-').map(Number)
+  const [hour, minute] = timePart.split(':').map(Number)
+  return new Date(Date.UTC(year, month - 1, day, hour || 0, minute || 0))
+}
+
+function formatShipoxDate(date, endOfDay = false) {
+  const pad = (value) => String(value).padStart(2, '0')
+  const hours = endOfDay ? '23:59' : '00:00'
+  return `${date.getUTCFullYear()}-${pad(date.getUTCMonth() + 1)}-${pad(date.getUTCDate())} ${hours}`
+}
+
+function dateWindows(fromText, toText, chunkDays) {
+  if (!toText) return [{ from: fromText, to: '' }]
+  const windows = []
+  let cursor = parseShipoxDate(fromText)
+  const finalDate = parseShipoxDate(toText)
+  while (cursor <= finalDate) {
+    const end = new Date(cursor)
+    end.setUTCDate(end.getUTCDate() + chunkDays - 1)
+    if (end > finalDate) end.setTime(finalDate.getTime())
+    windows.push({ from: formatShipoxDate(cursor), to: formatShipoxDate(end, true) })
+    cursor = new Date(end)
+    cursor.setUTCDate(cursor.getUTCDate() + 1)
+  }
+  return windows
+}
+
 async function fetchOrders(options, auth) {
   const orders = []
-  let page = 0
+  let pages = 0
   let total = 0
-  async function fetchPage(pageNumber) {
+  async function fetchPage(pageNumber, window) {
     const params = new URLSearchParams({
       size: String(options.pageSize),
-      from_date_time: options.from,
+      from_date_time: window.from,
       page: String(pageNumber),
       simple: 'false',
     })
+    if (window.to) params.set('to_date_time', window.to)
     if (options.customerId) params.set('customer_id', options.customerId)
     const json = await requestJson(`${ORDERS_URL}?${params}`, {
       headers: {
@@ -251,30 +413,42 @@ async function fetchOrders(options, auth) {
     }
   }
 
-  while (true) {
-    if (options.limitPages && page >= options.limitPages) break
-    if (total && orders.length >= total) break
+  for (const window of dateWindows(options.from, options.to, options.chunkDays)) {
+    let page = 0
+    let windowTotal = 0
+    const beforeWindow = orders.length
+    console.log(`Shipox window ${window.from}${window.to ? ` - ${window.to}` : ''}`)
+    while (true) {
+      if (options.limitPages && pages >= options.limitPages) break
+      if (windowTotal && orders.length - beforeWindow >= windowTotal) break
 
-    const totalPages = total ? Math.ceil(total / options.pageSize) : Number.POSITIVE_INFINITY
-    const targetPages = options.limitPages ? Math.min(options.limitPages, totalPages) : totalPages
-    const pages = []
-    for (let p = page; p < targetPages && pages.length < options.concurrency; p += 1) {
-      pages.push(p)
+      const totalPages = windowTotal ? Math.ceil(windowTotal / options.pageSize) : Number.POSITIVE_INFINITY
+      const targetPages = totalPages
+      const pageNumbers = []
+      for (let p = page; p < targetPages && pageNumbers.length < options.concurrency; p += 1) {
+        pageNumbers.push(p)
+      }
+      if (!pageNumbers.length) break
+
+      const fetched = await Promise.all(pageNumbers.map((pageNumber) => fetchPage(pageNumber, window)))
+      fetched.sort((a, b) => a.page - b.page)
+      for (const result of fetched) {
+        windowTotal = Number(result.total || windowTotal || 0)
+        total += result.page === 0 ? windowTotal : 0
+        orders.push(...result.list)
+        page = result.page + 1
+        pages += 1
+        console.log(`Shipox ${window.from} page ${result.page}: ${result.list.length}; window fetched ${orders.length - beforeWindow}/${windowTotal || '?'}`)
+        if (!result.list.length) break
+      }
+      if (fetched.some((result) => !result.list.length)) break
     }
-    if (!pages.length) break
-
-    const fetched = await Promise.all(pages.map((pageNumber) => fetchPage(pageNumber)))
-    fetched.sort((a, b) => a.page - b.page)
-    for (const result of fetched) {
-      total = Number(result.total || total || 0)
-      orders.push(...result.list)
-      page = result.page + 1
-      console.log(`Shipox page ${result.page}: ${result.list.length}; total fetched ${orders.length}/${total || '?'}`)
-      if (!result.list.length) return { orders, total, pages: page }
-      if (total && orders.length >= total) return { orders, total, pages: page }
+    if (options.limitPages && pages >= options.limitPages) {
+      console.log(`Stopped by SHIPOX_LIMIT_PAGES=${options.limitPages}`)
+      break
     }
   }
-  return { orders, total, pages: page }
+  return { orders, total, pages }
 }
 
 async function readOrdersFromPagesJsonl(filePath) {
@@ -345,13 +519,14 @@ function aggregateRoutes(routes, kind) {
   }))
 }
 
-function buildOrders(orders, snapshotDate) {
+function buildOrders(orders, snapshotDate, references) {
   return orders
     .filter((order) => !FINAL.has(String(order.status || '')) || FAILED.has(String(order.status || '')) || RETURNS.has(String(order.status || '')))
     .slice(0, 1500)
     .map((order) => {
       const clientName = order?.customer?.name || 'Не определено'
-      const city = cityName(order)
+      const city = cityName(order, references)
+      const cityMeta = getWarehouseMeta(city, references)
       const status = String(order.status || '')
       return {
         id: String(order.order_number || order.id || ''),
@@ -359,7 +534,7 @@ function buildOrders(orders, snapshotDate) {
         clientName,
         cityKey: keyFrom(city),
         cityName: city,
-        manager: 'Операции',
+        manager: cityMeta.manager || 'Операции',
         flowKey: keyFrom(flowLabel(order)),
         flowLabel: flowLabel(order),
         status: FINAL.has(status) ? status : daysBetween(order.created_date, snapshotDate) >= 2 ? 'Без попытки / активный' : status,
@@ -391,6 +566,7 @@ async function main() {
   const fetched = options.pagesJsonl
     ? await readOrdersFromPagesJsonl(options.pagesJsonl)
     : await fetchOrders(options, await getAuth())
+  const references = await loadReferences()
   const snapshotDate = fetched.orders.map((order) => order.last_status_date || order.created_date).filter(Boolean).sort().at(-1) || new Date().toISOString()
   const eventRoutes = new Map()
   const cohortRouteMap = new Map()
@@ -398,14 +574,14 @@ async function main() {
     const eventDate = dateKey(order.last_status_date || order.lastStatusDate || order.created_date || order.createdDate)
     const cohortDate = dateKey(order.created_date || order.createdDate)
     if (eventDate) {
-      const base = emptyRoute(order, eventDate)
+      const base = emptyRoute(order, eventDate, references)
       const key = `${base.date}|${base.clientKey}|${base.cityKey}|${base.flowKey}`
       const route = eventRoutes.get(key) || base
       addOrderToRoute(route, order, snapshotDate, 'event')
       eventRoutes.set(key, route)
     }
     if (cohortDate) {
-      const base = emptyRoute(order, cohortDate)
+      const base = emptyRoute(order, cohortDate, references)
       const key = `${base.date}|${base.clientKey}|${base.cityKey}|${base.flowKey}`
       const route = cohortRouteMap.get(key) || base
       addOrderToRoute(route, order, snapshotDate, 'cohort')
@@ -427,7 +603,7 @@ async function main() {
     risk: item.risk,
   }))
   const snapshot = {
-    generatedAt: new Date().toLocaleString('ru-RU'),
+    generatedAt: `${formatTashkentNow()} Asia/Tashkent`,
     environment: 'DEV',
     sourceMode: 'pipeline',
     periodOptions: [
@@ -453,7 +629,7 @@ async function main() {
     deliveryFlows,
     alerts,
     timeline: [],
-    orders: buildOrders(fetched.orders, snapshotDate),
+    orders: buildOrders(fetched.orders, snapshotDate, references),
     dailyMetrics: [],
     dailyRoutes,
     cohortRoutes,
