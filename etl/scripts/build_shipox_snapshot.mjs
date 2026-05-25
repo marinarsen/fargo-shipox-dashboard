@@ -31,6 +31,7 @@ function parseArgs(argv) {
     concurrency: Number(process.env.SHIPOX_CONCURRENCY || 4),
     requestTimeoutMs: Number(process.env.SHIPOX_REQUEST_TIMEOUT_MS || 120000),
     customerId: process.env.SHIPOX_CUSTOMER_ID || '',
+    baseSnapshot: process.env.SHIPOX_BASE_SNAPSHOT || '',
     pagesJsonl: '',
   }
   for (let i = 0; i < argv.length; i += 1) {
@@ -52,6 +53,8 @@ function parseArgs(argv) {
     else if (arg.startsWith('--request-timeout-ms=')) options.requestTimeoutMs = Number(arg.slice('--request-timeout-ms='.length)) || options.requestTimeoutMs
     else if (arg === '--customer-id') options.customerId = next()
     else if (arg.startsWith('--customer-id=')) options.customerId = arg.slice('--customer-id='.length)
+    else if (arg === '--base-snapshot') options.baseSnapshot = next()
+    else if (arg.startsWith('--base-snapshot=')) options.baseSnapshot = arg.slice('--base-snapshot='.length)
     else if (arg === '--pages-jsonl') options.pagesJsonl = next()
     else if (arg.startsWith('--pages-jsonl=')) options.pagesJsonl = arg.slice('--pages-jsonl='.length)
     else if (arg === '--help' || arg === '-h') options.help = true
@@ -547,6 +550,66 @@ function buildOrders(orders, snapshotDate, references) {
     })
 }
 
+function dateOnly(value) {
+  return String(value || '').slice(0, 10)
+}
+
+function isInsideRange(date, from, to) {
+  const key = dateOnly(date)
+  if (!key) return false
+  return key >= from && key <= to
+}
+
+function routeKey(route) {
+  return [
+    route.date,
+    route.clientKey,
+    route.cityKey,
+    route.regionKey,
+    route.flowKey,
+  ].join('|')
+}
+
+function mergeRoutes(baseRoutes, freshRoutes, from, to) {
+  const merged = new Map()
+  for (const route of Array.isArray(baseRoutes) ? baseRoutes : []) {
+    if (!isInsideRange(route.date, from, to)) merged.set(routeKey(route), route)
+  }
+  for (const route of freshRoutes) {
+    merged.set(routeKey(route), route)
+  }
+  return [...merged.values()].sort((a, b) => String(a.date).localeCompare(String(b.date)))
+}
+
+function mergeOrders(baseOrders, freshOrders, from, to) {
+  const merged = new Map()
+  for (const order of Array.isArray(baseOrders) ? baseOrders : []) {
+    const date = order.statusUpdatedAt || order.createdAt
+    if (!isInsideRange(date, from, to)) merged.set(order.id, order)
+  }
+  for (const order of freshOrders) {
+    merged.set(order.id, order)
+  }
+  return [...merged.values()].slice(0, 1500)
+}
+
+function dataRange(routes) {
+  const dates = routes.map((route) => dateOnly(route.date)).filter(Boolean).sort()
+  if (!dates.length) return null
+  return { from: dates[0], to: dates.at(-1) }
+}
+
+async function readBaseSnapshot(file) {
+  if (!file) return null
+  try {
+    const text = await fsp.readFile(file, 'utf8')
+    return JSON.parse(text)
+  } catch (error) {
+    console.warn(`Base snapshot not used: ${error?.message || String(error)}`)
+    return null
+  }
+}
+
 async function writeSnapshot(snapshot) {
   await fsp.mkdir(path.dirname(OUT_JSON), { recursive: true })
   await fsp.mkdir(path.dirname(OUT_SRC_JSON), { recursive: true })
@@ -567,6 +630,7 @@ async function main() {
     ? await readOrdersFromPagesJsonl(options.pagesJsonl)
     : await fetchOrders(options, await getAuth())
   const references = await loadReferences()
+  const baseSnapshot = await readBaseSnapshot(options.baseSnapshot)
   const snapshotDate = fetched.orders.map((order) => order.last_status_date || order.created_date).filter(Boolean).sort().at(-1) || new Date().toISOString()
   const eventRoutes = new Map()
   const cohortRouteMap = new Map()
@@ -588,8 +652,20 @@ async function main() {
       cohortRouteMap.set(key, route)
     }
   }
-  const dailyRoutes = [...eventRoutes.values()]
-  const cohortRoutes = [...cohortRouteMap.values()]
+  const refreshFrom = dateOnly(options.from)
+  const refreshTo = dateOnly(options.to || snapshotDate || new Date().toISOString())
+  const freshDailyRoutes = [...eventRoutes.values()]
+  const freshCohortRoutes = [...cohortRouteMap.values()]
+  const freshOrders = buildOrders(fetched.orders, snapshotDate, references)
+  const dailyRoutes = baseSnapshot
+    ? mergeRoutes(baseSnapshot.dailyRoutes, freshDailyRoutes, refreshFrom, refreshTo)
+    : freshDailyRoutes
+  const cohortRoutes = baseSnapshot
+    ? mergeRoutes(baseSnapshot.cohortRoutes, freshCohortRoutes, refreshFrom, refreshTo)
+    : freshCohortRoutes
+  const orders = baseSnapshot
+    ? mergeOrders(baseSnapshot.orders, freshOrders, refreshFrom, refreshTo)
+    : freshOrders
   const clients = aggregateRoutes(dailyRoutes, 'client').sort((a, b) => b.deliveryVolume - a.deliveryVolume).slice(0, 500)
   const cities = aggregateRoutes(dailyRoutes, 'city').sort((a, b) => b.deliveryVolume - a.deliveryVolume).slice(0, 500)
   const regions = aggregateRoutes(dailyRoutes, 'region').sort((a, b) => b.deliveryVolume - a.deliveryVolume)
@@ -602,8 +678,8 @@ async function main() {
     owner: item.manager || 'Операции',
     risk: item.risk,
   }))
-  const loadedTo = options.to || `${formatDate(new Date())} 23:59`
-  const loadedRangeLabel = `${String(options.from).slice(0, 10)} - ${String(loadedTo).slice(0, 10)}`
+  const range = dataRange(dailyRoutes) || { from: refreshFrom, to: refreshTo }
+  const loadedRangeLabel = `${range.from} - ${range.to}`
   const snapshot = {
     generatedAt: `${formatTashkentNow()} Asia/Tashkent`,
     environment: 'DEV',
@@ -631,13 +707,26 @@ async function main() {
     deliveryFlows,
     alerts,
     timeline: [],
-    orders: buildOrders(fetched.orders, snapshotDate, references),
+    orders,
     dailyMetrics: [],
     dailyRoutes,
     cohortRoutes,
   }
   await writeSnapshot(snapshot)
-  console.log(JSON.stringify({ ok: true, source: options.pagesJsonl ? 'shipox_pages_jsonl' : 'shipox', orders: fetched.orders.length, totalReported: fetched.total, pages: fetched.pages, routes: dailyRoutes.length, cohortRoutes: cohortRoutes.length, out: OUT_JSON }, null, 2))
+  console.log(JSON.stringify({
+    ok: true,
+    source: options.pagesJsonl ? 'shipox_pages_jsonl' : 'shipox',
+    mode: baseSnapshot ? 'incremental-merge' : 'fresh',
+    refreshFrom,
+    refreshTo,
+    orders: fetched.orders.length,
+    totalReported: fetched.total,
+    pages: fetched.pages,
+    freshRoutes: freshDailyRoutes.length,
+    routes: dailyRoutes.length,
+    cohortRoutes: cohortRoutes.length,
+    out: OUT_JSON,
+  }, null, 2))
 }
 
 main().catch((error) => {

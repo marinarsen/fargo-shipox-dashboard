@@ -2,6 +2,15 @@ name: Глубокое обновление Shipox (3 месяца)
 
 on:
   workflow_dispatch:
+    inputs:
+      mode:
+        description: "Что обновить"
+        required: true
+        default: "last_3_months"
+        type: choice
+        options:
+          - last_3_months
+          - full_2026
   schedule:
     # GitHub cron works in UTC. Sunday 21:00 UTC = Monday 02:00 Asia/Tashkent.
     - cron: "0 21 * * 0"
@@ -53,11 +62,27 @@ jobs:
       - name: Set 3-month Tashkent window
         shell: bash
         run: |
-          echo "SNAPSHOT_FROM_SHIPOX=$(TZ=Asia/Tashkent date -d '3 months ago' '+%Y-%m-%d 00:00')" >> "$GITHUB_ENV"
+          if [[ "${{ github.event.inputs.mode }}" == "full_2026" ]]; then
+            echo "SNAPSHOT_FROM_SHIPOX=2026-01-01 00:00" >> "$GITHUB_ENV"
+            echo "Deep refresh: full 2026 by Asia/Tashkent time."
+          else
+            echo "SNAPSHOT_FROM_SHIPOX=$(TZ=Asia/Tashkent date -d '3 months ago' '+%Y-%m-%d 00:00')" >> "$GITHUB_ENV"
+            echo "Deep refresh: last 3 months by Asia/Tashkent time."
+          fi
           echo "SNAPSHOT_TO_SHIPOX=$(TZ=Asia/Tashkent date '+%Y-%m-%d 23:59')" >> "$GITHUB_ENV"
           echo "SHIPOX_CHUNK_DAYS=14" >> "$GITHUB_ENV"
           echo "SHIPOX_LIMIT_PAGES=0" >> "$GITHUB_ENV"
-          echo "Deep refresh: last 3 months by Asia/Tashkent time."
+
+      - name: Download current published snapshot
+        shell: bash
+        run: |
+          mkdir -p artifacts/base
+          if curl -fsSL "https://marinarsen.github.io/fargo-shipox-dashboard/generatedSnapshot.json" -o artifacts/base/generatedSnapshot.json; then
+            echo "SHIPOX_BASE_SNAPSHOT=artifacts/base/generatedSnapshot.json" >> "$GITHUB_ENV"
+            echo "Using current published snapshot as merge base."
+          else
+            echo "Current published snapshot is not available; building a fresh window."
+          fi
 
       - name: Build fresh Shipox snapshot
         run: npm run etl:shipox:snapshot

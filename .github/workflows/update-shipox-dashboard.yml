@@ -59,6 +59,17 @@ jobs:
           echo "SHIPOX_LIMIT_PAGES=0" >> "$GITHUB_ENV"
           echo "Fast refresh: last 30 calendar days by Asia/Tashkent time."
 
+      - name: Download current published snapshot
+        shell: bash
+        run: |
+          mkdir -p artifacts/base
+          if curl -fsSL "https://marinarsen.github.io/fargo-shipox-dashboard/generatedSnapshot.json" -o artifacts/base/generatedSnapshot.json; then
+            echo "SHIPOX_BASE_SNAPSHOT=artifacts/base/generatedSnapshot.json" >> "$GITHUB_ENV"
+            echo "Using current published snapshot as merge base."
+          else
+            echo "Current published snapshot is not available; building a fresh window."
+          fi
+
       - name: Build fresh Shipox snapshot
         run: npm run etl:shipox:snapshot
 
