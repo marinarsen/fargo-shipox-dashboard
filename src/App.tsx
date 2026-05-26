@@ -34,6 +34,13 @@ type DetailTarget =
 
 type AnalysisMode = 'events' | 'cohort'
 
+type PieSegment = {
+  key: string
+  name: string
+  value: number
+  color: string
+}
+
 type MetricAccumulator = {
   key: string
   name: string
@@ -76,6 +83,7 @@ const statusMetric: Record<string, StatusMetricKey> = {
 }
 
 const DEFAULT_TODAY = '2026-05-25'
+const pieColors = ['#1f8a5f', '#2f6fb2', '#d7a31f', '#d66a2f', '#5f7f95', '#8a63a8', '#b8c4cf']
 
 function formatNumber(value: number) {
   return Math.round(value).toLocaleString('ru-RU')
@@ -92,6 +100,10 @@ function kpiClass(kpi: Kpi) {
 
 function barWidth(value: number, max: number) {
   return `${Math.max(4, Math.round((value / Math.max(1, max)) * 100))}%`
+}
+
+function normalizeSearch(value: string) {
+  return value.toLowerCase().replace(/\s+/g, ' ').trim()
 }
 
 function toDate(value: string) {
@@ -305,11 +317,49 @@ function latestSnapshotDate(snapshot: DashboardSnapshot) {
   return dates.sort().at(-1) || DEFAULT_TODAY
 }
 
+function buildPieGradient(segments: PieSegment[]) {
+  const total = segments.reduce((sum, item) => sum + item.value, 0)
+  if (!total) return '#edf2f6'
+  let cursor = 0
+  return `conic-gradient(${segments.map((item) => {
+    const start = cursor
+    cursor += (item.value / total) * 100
+    return `${item.color} ${start}% ${cursor}%`
+  }).join(', ')})`
+}
+
+function TopClientsPie({ segments }: { segments: PieSegment[] }) {
+  const total = segments.reduce((sum, item) => sum + item.value, 0)
+  return (
+    <article className="panel-block pie-panel">
+      <div className="section-head compact">
+        <div><h2>Топ клиентов</h2><p>Доля в доставленных заказах</p></div>
+        <PackageCheck size={19} />
+      </div>
+      <div className="pie-wrap">
+        <div className="pie-chart" style={{ background: buildPieGradient(segments) }}>
+          <div><strong>{formatNumber(total)}</strong><span>доставлено</span></div>
+        </div>
+        <div className="pie-legend">
+          {segments.map((item) => (
+            <div key={item.key}>
+              <i style={{ background: item.color }} />
+              <span>{item.name}</span>
+              <strong>{Math.round((item.value / Math.max(1, total)) * 100)}%</strong>
+            </div>
+          ))}
+        </div>
+      </div>
+    </article>
+  )
+}
+
 function DashboardApp({ snapshot }: { snapshot: DashboardSnapshot }) {
   const today = useMemo(() => latestSnapshotDate(snapshot), [snapshot])
   const [period, setPeriod] = useState(snapshot.periodOptions[0].key)
   const [status, setStatus] = useState(snapshot.statusOptions[0].key)
   const [client, setClient] = useState('all')
+  const [clientSearch, setClientSearch] = useState('')
   const [city, setCity] = useState('all')
   const [analysisMode, setAnalysisMode] = useState<AnalysisMode>('events')
   const [clientMode, setClientMode] = useState<'top' | 'all'>('top')
@@ -340,23 +390,26 @@ function DashboardApp({ snapshot }: { snapshot: DashboardSnapshot }) {
       ? snapshot.cohortRoutes || snapshot.dailyRoutes || []
       : snapshot.dailyRoutes || []
   ), [analysisMode, snapshot.cohortRoutes, snapshot.dailyRoutes])
+  const clientSearchNeedle = normalizeSearch(clientSearch)
   const routes = useMemo(() => {
     return allRoutes.filter((route) => {
       if (route.date < currentRange.from || route.date > currentRange.to) return false
       if (client !== 'all' && route.clientKey !== client) return false
+      if (client === 'all' && clientSearchNeedle && !normalizeSearch(route.clientName).includes(clientSearchNeedle)) return false
       if (city !== 'all' && route.cityKey !== city) return false
       return routeMatchesStatus(route, status)
     })
-  }, [allRoutes, city, client, currentRange.from, currentRange.to, status])
+  }, [allRoutes, city, client, clientSearchNeedle, currentRange.from, currentRange.to, status])
 
   const previousRoutes = useMemo(() => {
     return allRoutes.filter((route) => {
       if (route.date < previousRange.from || route.date > previousRange.to) return false
       if (client !== 'all' && route.clientKey !== client) return false
+      if (client === 'all' && clientSearchNeedle && !normalizeSearch(route.clientName).includes(clientSearchNeedle)) return false
       if (city !== 'all' && route.cityKey !== city) return false
       return routeMatchesStatus(route, status)
     })
-  }, [allRoutes, city, client, previousRange.from, previousRange.to, status])
+  }, [allRoutes, city, client, clientSearchNeedle, previousRange.from, previousRange.to, status])
 
   const clients = useMemo(() => {
     return aggregateRoutes(routes, 'client', previousRoutes)
@@ -386,6 +439,12 @@ function DashboardApp({ snapshot }: { snapshot: DashboardSnapshot }) {
     return [...map.entries()].sort((a, b) => a[1].localeCompare(b[1], 'ru'))
   }, [allRoutes])
 
+  const handleClientSearch = (value: string) => {
+    setClientSearch(value)
+    const exact = clientOptions.find(([, name]) => normalizeSearch(name) === normalizeSearch(value))
+    setClient(exact ? exact[0] : 'all')
+  }
+
   const cityOptions = useMemo(() => {
     const map = new Map(allRoutes.map((route) => [route.cityKey, route.cityName]))
     return [...map.entries()].sort((a, b) => a[1].localeCompare(b[1], 'ru'))
@@ -401,8 +460,11 @@ function DashboardApp({ snapshot }: { snapshot: DashboardSnapshot }) {
   const maxCityActive = Math.max(1, ...cities.map((item) => item.deliveryVolume))
   const maxRegionActive = Math.max(1, ...regions.map((item) => item.deliveryVolume))
   const maxFlowActive = Math.max(1, ...flows.map((item) => item.deliveryVolume))
-
   const isCohort = analysisMode === 'cohort'
+  const showNoAttempt = clients.some((item) => item.noAttempt2d > 0)
+  const showStale = clients.some((item) => item.stale > 0)
+  const showTails = isCohort && clients.some((item) => item.tails > 0)
+
   const totalDelivered = routes.reduce((sum, item) => sum + (isCohort ? item.cohortDelivered || 0 : item.delivered), 0)
   const totalNoAttempt = routes.reduce((sum, item) => sum + item.noAttempt2d, 0)
   const totalPickup = routes.reduce((sum, item) => sum + item.pickupVolume, 0)
@@ -417,6 +479,19 @@ function DashboardApp({ snapshot }: { snapshot: DashboardSnapshot }) {
   const pickupComparison = hasPreviousData ? `к прошлому периоду ${formatDelta(calcDelta(totalPickup, prevPickup))}` : 'нет базы для сравнения'
   const deliveryComparison = hasPreviousData ? `к прошлому периоду ${formatDelta(calcDelta(totalDelivery, prevDelivery))}` : 'нет базы для сравнения'
   const deltaText = (value: number) => (hasPreviousData ? formatDelta(value) : 'без сравнения')
+  const topClientPie = useMemo(() => {
+    const top = [...clients].sort((a, b) => (isCohort ? b.cohortDelivered || 0 : b.delivered) - (isCohort ? a.cohortDelivered || 0 : a.delivered)).slice(0, 6)
+    const topTotal = top.reduce((sum, item) => sum + (isCohort ? item.cohortDelivered || 0 : item.delivered), 0)
+    const allTotal = clients.reduce((sum, item) => sum + (isCohort ? item.cohortDelivered || 0 : item.delivered), 0)
+    const segments = top.map((item, index) => ({
+      key: item.key,
+      name: item.name,
+      value: isCohort ? item.cohortDelivered || 0 : item.delivered,
+      color: pieColors[index],
+    })).filter((item) => item.value > 0)
+    if (allTotal > topTotal) segments.push({ key: 'other', name: 'Остальные', value: allTotal - topTotal, color: pieColors[6] })
+    return segments
+  }, [clients, isCohort])
 
   const kpis: Kpi[] = [
     { key: 'created', label: isCohort ? 'Создано заказов' : 'Заказов со статусом', value: formatNumber(totalDelivery), delta: selectedRangeLabel, risk: 'ok' },
@@ -424,8 +499,8 @@ function DashboardApp({ snapshot }: { snapshot: DashboardSnapshot }) {
     { key: 'pickup', label: 'Из ПВЗ / прием', value: formatNumber(totalPickup), delta: pickupComparison, risk: 'ok' },
     { key: 'delivery', label: 'В город доставки', value: formatNumber(totalDelivery), delta: deliveryComparison, risk: 'ok' },
     { key: 'dt', label: 'Delivery time', value: `${avgDt.toFixed(1)} дн`, delta: avgDt > 4 ? 'хуже нормы' : 'в норме', risk: avgDt > 4 ? 'risk' : 'ok' },
-    { key: 'attempt', label: 'До 1-й попытки', value: 'н/д', delta: 'нужен расчет из webhook', risk: 'watch' },
-    { key: 'no_attempt', label: 'Без попытки 2+ дня', value: formatNumber(totalNoAttempt), delta: 'нужен ручной контроль', risk: totalNoAttempt > 250 ? 'critical' : 'watch' },
+    { key: 'attempt', label: 'До 1-й попытки', value: 'н/д', delta: 'ожидает webhook первой попытки', risk: 'watch' },
+    { key: 'no_attempt', label: 'Без попытки 2+ дня', value: formatNumber(totalNoAttempt), delta: totalNoAttempt ? 'ручной контроль' : 'нет открытых сигналов', risk: totalNoAttempt > 250 ? 'critical' : 'watch' },
     { key: 'returns', label: 'Возвраты', value: formatNumber(totalReturns), delta: isCohort ? 'по созданным заказам' : 'по событиям статуса', risk: totalReturns > 500 ? 'risk' : 'watch' },
   ]
 
@@ -442,7 +517,6 @@ function DashboardApp({ snapshot }: { snapshot: DashboardSnapshot }) {
           </div>
           <div className="topbar-meta">
             <span>{snapshot.environment}</span>
-            <span>{snapshot.sourceMode === 'sample' ? 'демо-данные' : 'живые данные Mongo'}</span>
             <span>обновлено {snapshot.generatedAt}</span>
           </div>
         </header>
@@ -464,7 +538,7 @@ function DashboardApp({ snapshot }: { snapshot: DashboardSnapshot }) {
         </section>
 
         <section className="control-strip" aria-label="Фильтры">
-          <label><Building2 size={16} /><span>Клиент</span><select value={client} onChange={(event) => setClient(event.target.value)}><option value="all">Все клиенты</option>{clientOptions.map(([key, name]) => <option value={key} key={key}>{name}</option>)}</select></label>
+          <label className="client-search"><Building2 size={16} /><span>Клиент</span><input list="client-options" value={clientSearch} placeholder="Все клиенты" onChange={(event) => handleClientSearch(event.target.value)} /><datalist id="client-options">{clientOptions.map(([key, name]) => <option value={name} key={key} />)}</datalist>{clientSearch && <button type="button" onClick={() => { setClientSearch(''); setClient('all') }}>×</button>}</label>
           <label><MapPin size={16} /><span>Город</span><select value={city} onChange={(event) => setCity(event.target.value)}><option value="all">Все города</option>{cityOptions.map(([key, name]) => <option value={key} key={key}>{name}</option>)}</select></label>
           <label><Filter size={16} /><span>Статус</span><select value={status} onChange={(event) => setStatus(event.target.value)}>{snapshot.statusOptions.map((item) => <option value={item.key} key={item.key}>{item.label}</option>)}</select></label>
           <div className="range-note"><Search size={16} /><span>{selectedRangeLabel}</span></div>
@@ -500,27 +574,32 @@ function DashboardApp({ snapshot }: { snapshot: DashboardSnapshot }) {
             </div>
           </div>
 
-          <div className="table-shell">
-            <table className="smart-table">
-              <thead>
-                <tr>
-                  <th>Клиент</th><th>{isCohort ? 'Создано' : 'Статусов'}</th><th>Доставлено</th><th>DT</th><th>{isCohort ? 'Доля доставки' : 'Нет попытки'}</th><th>{isCohort ? 'Возвраты когорты' : 'Нет статуса'}</th><th>Хвосты</th><th>Возвраты</th><th>Failed</th>
-                </tr>
-              </thead>
-              <tbody>
-                {visibleClients.map((item) => (
-                  <tr className={detail.kind === 'client' && detail.item.key === item.key ? 'is-selected' : ''} key={item.key} onClick={() => setDetail({ kind: 'client', item })}>
-                    <td><button className="row-button" type="button">{item.name}<ChevronRight size={15} /></button></td>
-                    <td>{formatNumber(item.deliveryVolume || 0)}</td>
-                    <td>{formatNumber(isCohort ? item.cohortDelivered || 0 : item.delivered)}</td>
-                    <td>{(isCohort ? item.cohortDeliveryTime || 0 : item.deliveryTime).toFixed(1)}</td>
-                    <td>{isCohort ? `${Math.round(((item.cohortDelivered || 0) / Math.max(1, item.deliveryVolume || 0)) * 1000) / 10}%` : formatNumber(item.noAttempt2d)}</td>
-                    <td>{isCohort ? formatNumber(item.cohortReturns || 0) : formatNumber(item.stale)}</td>
-                    <td>{formatNumber(item.tails)}</td><td>{formatNumber(isCohort ? item.cohortReturns || 0 : item.returns)}</td><td>{formatNumber(item.failed)}</td>
+          <div className="clients-layout">
+            <div className="table-shell client-table-shell">
+              <table className="smart-table clients-table">
+                <thead>
+                  <tr>
+                    <th>Клиент</th><th>{isCohort ? 'Создано' : 'Статусов'}</th><th>Доставлено</th><th>DT</th>{isCohort && <th>Доля</th>}{showNoAttempt && <th>Нет попытки</th>}{showStale && <th>Нет статуса</th>}{showTails && <th>Хвосты</th>}<th>Возвраты</th><th>Failed</th>
                   </tr>
-                ))}
-              </tbody>
-            </table>
+                </thead>
+                <tbody>
+                  {visibleClients.map((item) => (
+                    <tr className={detail.kind === 'client' && detail.item.key === item.key ? 'is-selected' : ''} key={item.key} onClick={() => setDetail({ kind: 'client', item })}>
+                      <td><button className="row-button" type="button">{item.name}<ChevronRight size={15} /></button></td>
+                      <td>{formatNumber(item.deliveryVolume || 0)}</td>
+                      <td>{formatNumber(isCohort ? item.cohortDelivered || 0 : item.delivered)}</td>
+                      <td>{(isCohort ? item.cohortDeliveryTime || 0 : item.deliveryTime).toFixed(1)}</td>
+                      {isCohort && <td>{`${Math.round(((item.cohortDelivered || 0) / Math.max(1, item.deliveryVolume || 0)) * 1000) / 10}%`}</td>}
+                      {showNoAttempt && <td>{formatNumber(item.noAttempt2d)}</td>}
+                      {showStale && <td>{formatNumber(item.stale)}</td>}
+                      {showTails && <td>{formatNumber(item.tails)}</td>}
+                      <td>{formatNumber(isCohort ? item.cohortReturns || 0 : item.returns)}</td><td>{formatNumber(item.failed)}</td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+            <TopClientsPie segments={topClientPie} />
           </div>
 
           <div className="split-panels">
@@ -600,17 +679,18 @@ function DashboardApp({ snapshot }: { snapshot: DashboardSnapshot }) {
                   <span>{order.status}</span>
                   <small>создан {order.createdAt}, обновлен {order.statusUpdatedAt}, источник: {order.source}</small>
                 </button>
-              )) : <div className="empty-state">По этой комбинации фильтров нет примеров в drilldown. Агрегаты выше считаются по всем Mongo-строкам, не только по этим примерам.</div>}
+              )) : <div className="empty-state">По этой комбинации фильтров нет примеров в drilldown. Агрегаты выше считаются по всем строкам Shipox, не только по этим примерам.</div>}
             </div>
           </article>
 
           <article className="detail-card">
             <div className="section-head compact"><div><h2>Откуда цифры</h2><p>Проверочная логика расчета</p></div><Filter size={19} /></div>
             <div className="formula-list">
-              <div><strong>Период</strong><span>фильтруем ежедневные агрегаты Mongo по выбранным датам, без коэффициентов и имитации</span></div>
+              <div><strong>Период</strong><span>фильтруем ежедневные агрегаты Shipox по выбранным датам, без коэффициентов и имитации</span></div>
               <div><strong>Из ПВЗ / в город</strong><span>из ПВЗ показывает отправки, которые стартуют из пункта; в город показывает все созданные заказы по городу назначения</span></div>
               <div><strong>Сравнение</strong><span>текущий отрезок сравнивается с предыдущим отрезком такой же длины</span></div>
-              <div><strong>До 1-й попытки</strong><span>пока помечено н/д: следующий шаг — оптимальный join с Mongo webhook</span></div>
+              <div><strong>До 1-й попытки</strong><span>ожидает подключение webhook-события первой попытки</span></div>
+              <div><strong>Ручной контроль</strong><span>сейчас строится из активных заказов, возвратов, failed и просрочек по статусу</span></div>
             </div>
           </article>
 
@@ -677,7 +757,7 @@ function App() {
       <main className="dashboard loading-screen">
         <section className="detail-card">
           <h1>Fargo / Shipox Control Tower</h1>
-          <p>Загружаю живой snapshot из Mongo...</p>
+          <p>Загружаю snapshot Shipox...</p>
         </section>
       </main>
     )
