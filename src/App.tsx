@@ -84,6 +84,8 @@ const statusMetric: Record<string, StatusMetricKey> = {
 
 const DEFAULT_TODAY = '2026-05-25'
 const pieColors = ['#1f8a5f', '#2f6fb2', '#d7a31f', '#d66a2f', '#5f7f95', '#8a63a8', '#b8c4cf']
+const QUICK_WORKFLOW_URL = 'https://github.com/marinarsen/fargo-shipox-dashboard/actions/workflows/update-shipox-dashboard.yml'
+const DEEP_WORKFLOW_URL = 'https://github.com/marinarsen/fargo-shipox-dashboard/actions/workflows/deep-shipox-dashboard.yml'
 
 function formatNumber(value: number) {
   return Math.round(value).toLocaleString('ru-RU')
@@ -354,8 +356,25 @@ function TopClientsPie({ segments }: { segments: PieSegment[] }) {
   )
 }
 
+function isAdminView() {
+  return new URLSearchParams(window.location.search).get('admin') === '1'
+}
+
+function AdminRefreshMenu() {
+  return (
+    <details className="admin-refresh">
+      <summary>Обновить</summary>
+      <div>
+        <a href={QUICK_WORKFLOW_URL} target="_blank" rel="noreferrer">Быстрое 30 дней</a>
+        <a href={DEEP_WORKFLOW_URL} target="_blank" rel="noreferrer">Глубокое 3 месяца</a>
+      </div>
+    </details>
+  )
+}
+
 function DashboardApp({ snapshot }: { snapshot: DashboardSnapshot }) {
   const today = useMemo(() => latestSnapshotDate(snapshot), [snapshot])
+  const showAdminControls = useMemo(() => isAdminView(), [])
   const [period, setPeriod] = useState(snapshot.periodOptions[0].key)
   const [status, setStatus] = useState(snapshot.statusOptions[0].key)
   const [client, setClient] = useState('all')
@@ -516,6 +535,7 @@ function DashboardApp({ snapshot }: { snapshot: DashboardSnapshot }) {
             </div>
           </div>
           <div className="topbar-meta">
+            {showAdminControls && <AdminRefreshMenu />}
             <span>{snapshot.environment}</span>
             <span>обновлено {snapshot.generatedAt}</span>
           </div>
