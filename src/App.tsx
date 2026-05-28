@@ -759,7 +759,7 @@ function App() {
 
   useEffect(() => {
     let mounted = true
-    fetch(`${import.meta.env.BASE_URL}generatedSnapshot.json`)
+    fetch(`${import.meta.env.BASE_URL}generatedSnapshot.json?v=${Date.now()}`, { cache: 'no-store' })
       .then((response) => response.json())
       .then((data: DashboardSnapshot) => {
         if (mounted) setSnapshot(data)
