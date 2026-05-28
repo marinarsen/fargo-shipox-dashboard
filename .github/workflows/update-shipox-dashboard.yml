@@ -53,11 +53,13 @@ jobs:
       - name: Set 30-day Tashkent window
         shell: bash
         run: |
-          echo "SNAPSHOT_FROM_SHIPOX=$(TZ=Asia/Tashkent date -d '29 days ago' '+%Y-%m-%d 00:00')" >> "$GITHUB_ENV"
+          # Fetch a 45-day created-date buffer so deliveries inside the last 30 days
+          # from older orders are not removed during incremental event-date merging.
+          echo "SNAPSHOT_FROM_SHIPOX=$(TZ=Asia/Tashkent date -d '44 days ago' '+%Y-%m-%d 00:00')" >> "$GITHUB_ENV"
           echo "SNAPSHOT_TO_SHIPOX=$(TZ=Asia/Tashkent date '+%Y-%m-%d 23:59')" >> "$GITHUB_ENV"
           echo "SHIPOX_CHUNK_DAYS=7" >> "$GITHUB_ENV"
           echo "SHIPOX_LIMIT_PAGES=0" >> "$GITHUB_ENV"
-          echo "Fast refresh: last 30 calendar days by Asia/Tashkent time."
+          echo "Fast refresh: last 30 calendar days with a 45-day created-date buffer by Asia/Tashkent time."
 
       - name: Download current published snapshot
         shell: bash
