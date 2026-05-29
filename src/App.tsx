@@ -6,7 +6,7 @@ import {
   PackageCheck,
   Search,
 } from 'lucide-react'
-import { useEffect, useMemo, useState } from 'react'
+import { useEffect, useMemo, useRef, useState } from 'react'
 import './App.css'
 import type {
   ClientMetric,
@@ -39,6 +39,7 @@ type MetricAccumulator = {
   deliveryVolume: number
   deliveryTimeSum: number
   firstAttemptTimeSum: number
+  deliveryAttemptCount: number
   cohortDelivered: number
   cohortReturns: number
   cohortDeliveryTimeSum: number
@@ -233,6 +234,7 @@ function emptyAccumulator(key: string, name: string): MetricAccumulator {
     deliveryVolume: 0,
     deliveryTimeSum: 0,
     firstAttemptTimeSum: 0,
+    deliveryAttemptCount: 0,
     cohortDelivered: 0,
     cohortReturns: 0,
     cohortDeliveryTimeSum: 0,
@@ -251,6 +253,7 @@ function addRoute(target: MetricAccumulator, route: DailyRouteMetric) {
   target.deliveryVolume += route.deliveryVolume
   target.deliveryTimeSum += route.deliveryTimeSum
   target.firstAttemptTimeSum += route.firstAttemptTimeSum
+  target.deliveryAttemptCount += route.deliveryAttemptCount || 0
   target.cohortDelivered += route.cohortDelivered || 0
   target.cohortReturns += route.cohortReturns || 0
   target.cohortDeliveryTimeSum += route.cohortDeliveryTimeSum || 0
@@ -366,14 +369,33 @@ function isAdminView() {
 }
 
 function AdminRefreshMenu() {
+  const [open, setOpen] = useState(false)
+  const menuRef = useRef<HTMLDivElement | null>(null)
+
+  useEffect(() => {
+    if (!open) return undefined
+    const closeOnOutside = (event: PointerEvent) => {
+      if (!menuRef.current?.contains(event.target as Node)) setOpen(false)
+    }
+    const closeOnEscape = (event: KeyboardEvent) => {
+      if (event.key === 'Escape') setOpen(false)
+    }
+    document.addEventListener('pointerdown', closeOnOutside)
+    document.addEventListener('keydown', closeOnEscape)
+    return () => {
+      document.removeEventListener('pointerdown', closeOnOutside)
+      document.removeEventListener('keydown', closeOnEscape)
+    }
+  }, [open])
+
   return (
-    <details className="admin-refresh">
-      <summary>Обновить</summary>
+    <div className={`admin-refresh ${open ? 'is-open' : ''}`} ref={menuRef}>
+      <button type="button" onClick={() => setOpen((value) => !value)}>Обновить</button>
       <div>
-        <a href={QUICK_WORKFLOW_URL} target="_blank" rel="noreferrer">Быстрое 30 дней</a>
-        <a href={DEEP_WORKFLOW_URL} target="_blank" rel="noreferrer">Глубокое 3 месяца</a>
+        <a href={QUICK_WORKFLOW_URL} target="_blank" rel="noreferrer" onClick={() => setOpen(false)}>Быстрое 30 дней</a>
+        <a href={DEEP_WORKFLOW_URL} target="_blank" rel="noreferrer" onClick={() => setOpen(false)}>Глубокое 3 месяца</a>
       </div>
-    </details>
+    </div>
   )
 }
 
@@ -411,6 +433,9 @@ function DashboardApp({ snapshot }: { snapshot: DashboardSnapshot }) {
       ? snapshot.cohortRoutes || snapshot.dailyRoutes || []
       : snapshot.dailyRoutes || []
   ).map(normalizeRouteRegion), [analysisMode, snapshot.cohortRoutes, snapshot.dailyRoutes])
+  const allCreatedRoutes = useMemo(() => (
+    snapshot.cohortRoutes || snapshot.dailyRoutes || []
+  ).map(normalizeRouteRegion), [snapshot.cohortRoutes, snapshot.dailyRoutes])
   const clientSearchNeedle = normalizeSearch(clientSearch)
   const routes = useMemo(() => {
     return allRoutes.filter((route) => {
@@ -421,6 +446,16 @@ function DashboardApp({ snapshot }: { snapshot: DashboardSnapshot }) {
       return routeMatchesStatus(route, status)
     })
   }, [allRoutes, city, client, clientSearchNeedle, currentRange.from, currentRange.to, status])
+
+  const createdRoutes = useMemo(() => {
+    return allCreatedRoutes.filter((route) => {
+      if (route.date < currentRange.from || route.date > currentRange.to) return false
+      if (client !== 'all' && route.clientKey !== client) return false
+      if (client === 'all' && clientSearchNeedle && !normalizeSearch(route.clientName).includes(clientSearchNeedle)) return false
+      if (city !== 'all' && route.cityKey !== city) return false
+      return true
+    })
+  }, [allCreatedRoutes, city, client, clientSearchNeedle, currentRange.from, currentRange.to])
 
   const previousRoutes = useMemo(() => {
     return allRoutes.filter((route) => {
@@ -436,6 +471,11 @@ function DashboardApp({ snapshot }: { snapshot: DashboardSnapshot }) {
     return aggregateRoutes(routes, 'client', previousRoutes)
       .sort((a, b) => riskOrder[b.risk] - riskOrder[a.risk] || b.active + b.delivered - (a.active + a.delivered)) as ClientMetric[]
   }, [previousRoutes, routes])
+  const createdByClient = useMemo(() => {
+    return new Map(
+      aggregateRoutes(createdRoutes, 'client').map((item) => [item.key, item.deliveryVolume || 0]),
+    )
+  }, [createdRoutes])
 
   const regions = useMemo(() => {
     return aggregateRoutes(routes, 'region', previousRoutes)
@@ -468,7 +508,9 @@ function DashboardApp({ snapshot }: { snapshot: DashboardSnapshot }) {
   const showTails = isCohort && clients.some((item) => item.tails > 0)
 
   const totalDelivered = routes.reduce((sum, item) => sum + (isCohort ? item.cohortDelivered || 0 : item.delivered), 0)
-  const totalNoAttempt = routes.reduce((sum, item) => sum + item.noAttempt2d, 0)
+  const totalNoAttempt = createdRoutes.reduce((sum, item) => sum + item.noAttempt2d, 0)
+  const totalCreated = createdRoutes.reduce((sum, item) => sum + item.deliveryVolume, 0)
+  const totalDeliveryAttempts = createdRoutes.reduce((sum, item) => sum + (item.deliveryAttemptCount || 0), 0)
   const totalPickup = routes.reduce((sum, item) => sum + item.pickupVolume, 0)
   const totalDelivery = routes.reduce((sum, item) => sum + item.deliveryVolume, 0)
   const totalReturns = routes.reduce((sum, item) => sum + (isCohort ? item.cohortReturns || 0 : item.returns), 0)
@@ -496,12 +538,12 @@ function DashboardApp({ snapshot }: { snapshot: DashboardSnapshot }) {
   }, [clients, isCohort])
 
   const kpis: Kpi[] = [
-    { key: 'created', label: isCohort ? 'Создано заказов' : 'Заказов со статусом', value: formatNumber(totalDelivery), delta: selectedRangeLabel, risk: 'ok' },
+    { key: 'created', label: 'Создано заказов', value: formatNumber(totalCreated), delta: selectedRangeLabel, risk: 'ok' },
     { key: 'delivered', label: 'Доставлено', value: formatNumber(totalDelivered), delta: selectedRangeLabel, risk: 'ok' },
     { key: 'pickup', label: 'Из ПВЗ / прием', value: formatNumber(totalPickup), delta: pickupComparison, risk: 'ok' },
     { key: 'delivery', label: 'В город доставки', value: formatNumber(totalDelivery), delta: deliveryComparison, risk: 'ok' },
     { key: 'dt', label: 'Delivery time', value: `${avgDt.toFixed(1)} дн`, delta: avgDt > 4 ? 'хуже нормы' : 'в норме', risk: avgDt > 4 ? 'risk' : 'ok' },
-    { key: 'attempt', label: 'До 1-й попытки', value: 'н/д', delta: 'ожидает webhook первой попытки', risk: 'watch' },
+    { key: 'attempt', label: 'Попытки доставки', value: formatNumber(totalDeliveryAttempts), delta: totalDeliveryAttempts ? 'из Shipox delivery_attempt_count' : 'нет попыток в выборке', risk: totalDeliveryAttempts ? 'ok' : 'watch' },
     { key: 'no_attempt', label: 'Без попытки 2+ дня', value: formatNumber(totalNoAttempt), delta: totalNoAttempt ? 'ручной контроль' : 'нет открытых сигналов', risk: totalNoAttempt > 250 ? 'critical' : 'watch' },
     { key: 'returns', label: 'Возвраты', value: formatNumber(totalReturns), delta: isCohort ? 'по созданным заказам' : 'по событиям статуса', risk: totalReturns > 500 ? 'risk' : 'watch' },
   ]
@@ -582,15 +624,14 @@ function DashboardApp({ snapshot }: { snapshot: DashboardSnapshot }) {
               <table className="smart-table clients-table">
                 <thead>
                   <tr>
-                    <th>Клиент</th><th>Создано</th><th>Picked up</th><th>Доставлено</th><th>DT</th>{isCohort && <th>Доля</th>}{showNoAttempt && <th>Нет попытки</th>}{showStale && <th>Нет статуса</th>}{showTails && <th>Хвосты</th>}<th>Возвраты</th><th>Failed</th>
+                    <th>Клиент</th><th>Создано</th><th>Доставлено</th><th>DT</th>{isCohort && <th>Доля</th>}{showNoAttempt && <th>Нет попытки</th>}{showStale && <th>Нет статуса</th>}{showTails && <th>Хвосты</th>}<th>Возвраты</th><th>Failed</th>
                   </tr>
                 </thead>
                 <tbody>
                   {visibleClients.map((item) => (
                     <tr key={item.key}>
                       <td><span className="row-label">{item.name}</span></td>
-                      <td>{formatNumber(item.deliveryVolume || 0)}</td>
-                      <td>{formatNumber(item.pickupVolume || 0)}</td>
+                      <td>{formatNumber(createdByClient.get(item.key) ?? item.deliveryVolume ?? 0)}</td>
                       <td>{formatNumber(isCohort ? item.cohortDelivered || 0 : item.delivered)}</td>
                       <td>{(isCohort ? item.cohortDeliveryTime || 0 : item.deliveryTime).toFixed(1)}</td>
                       {isCohort && <td>{`${Math.round(((item.cohortDelivered || 0) / Math.max(1, item.deliveryVolume || 0)) * 1000) / 10}%`}</td>}

@@ -169,6 +169,7 @@ export type DailyMetric = {
   deliveryVolume: number
   deliveryTimeSum: number
   firstAttemptTimeSum: number
+  deliveryAttemptCount?: number
   noAttempt2d: number
   stale: number
   tails: number
@@ -198,6 +199,7 @@ export type DailyRouteMetric = {
   deliveryVolume: number
   deliveryTimeSum: number
   firstAttemptTimeSum: number
+  deliveryAttemptCount?: number
   noAttempt2d: number
   stale: number
   tails: number

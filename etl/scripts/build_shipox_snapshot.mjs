@@ -377,6 +377,7 @@ function emptyRoute(order, date, references) {
     deliveryVolume: 0,
     deliveryTimeSum: 0,
     firstAttemptTimeSum: 0,
+    deliveryAttemptCount: 0,
     noAttempt2d: 0,
     stale: 0,
     tails: 0,
@@ -393,15 +394,17 @@ function addOrderToRoute(route, order, snapshotDate, mode) {
   const isFailed = FAILED.has(status)
   const created = order.created_date || order.createdDate
   const updated = order.last_status_date || order.lastStatusDate
+  const deliveryAttempts = Number(order.delivery_attempt_count ?? order.deliveryAttemptCount ?? 0) || 0
   const age = daysBetween(created, snapshotDate)
   const staleAge = daysBetween(updated, snapshotDate)
   route.deliveryVolume += 1
   route.pickupVolume += order.pick_up_warehouse?.name ? 1 : 0
+  route.deliveryAttemptCount += deliveryAttempts
   if (mode === 'cohort') {
     route.active += isFinal ? 0 : 1
     route.cohortDelivered += isDelivered ? 1 : 0
     route.cohortReturns += isReturn ? 1 : 0
-    route.noAttempt2d += !isFinal && age >= 2 && Number(order.deliveryAttemptCount || 0) <= 0 ? 1 : 0
+    route.noAttempt2d += !isFinal && age >= 2 && deliveryAttempts <= 0 ? 1 : 0
     route.stale += !isFinal && staleAge >= 2 ? 1 : 0
     route.tails += !isFinal && age >= 7 ? 1 : 0
   } else {
@@ -558,6 +561,7 @@ function aggregateRoutes(routes, kind) {
       deliveryDelta: 0,
       deliveryTimeSum: 0,
       firstAttemptTimeSum: 0,
+      deliveryAttemptCount: 0,
       cohortDelivered: 0,
       cohortReturns: 0,
       cohortDeliveryTimeSum: 0,
@@ -567,7 +571,7 @@ function aggregateRoutes(routes, kind) {
       returns: 0,
       failed: 0,
     }
-    for (const field of ['active', 'delivered', 'cohortDelivered', 'cohortReturns', 'pickupVolume', 'deliveryVolume', 'deliveryTimeSum', 'firstAttemptTimeSum', 'cohortDeliveryTimeSum', 'noAttempt2d', 'stale', 'tails', 'returns', 'failed']) {
+    for (const field of ['active', 'delivered', 'cohortDelivered', 'cohortReturns', 'pickupVolume', 'deliveryVolume', 'deliveryTimeSum', 'firstAttemptTimeSum', 'deliveryAttemptCount', 'cohortDeliveryTimeSum', 'noAttempt2d', 'stale', 'tails', 'returns', 'failed']) {
       item[field] += route[field] || 0
     }
     map.set(key, item)
