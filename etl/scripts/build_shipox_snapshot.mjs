@@ -20,6 +20,27 @@ const FINAL = new Set(['completed', 'issued', 'cancelled', 'cancelled_due_to_out
 const DELIVERED = new Set(['completed', 'issued'])
 const RETURNS = new Set(['returned_to_origin', 'returning_to_origin', 'out_for_return', 'to_be_returned'])
 const FAILED = new Set(['delivery_failed', 'delivery_rejected', 'recipient_mobile_no_response', 'recipient_mobile_switched_off', 'recipient_not_available', 'bad_recipient_address'])
+const TASHKENT_MANAGER = 'Турабек Касимов / Марсель Харисов'
+const TASHKENT_EMAIL = 'turabek.kasimov@fargo.uz marsel.kharisov@fargo.uz'
+const TASHKENT_KEYS = new Set([
+  'TOSHKENT',
+  'TASHKENT',
+  'MIRZOULUGBEK',
+  'YUNUSOBOD',
+  'SHAYXONTOHUR',
+  'CHILONZOR',
+  'SERGELI',
+  'YASHNOBOD',
+  'YAKKASAROY',
+  'UCHTEPA',
+  'OLMAZOR',
+  'BEKTEMIR',
+  'MIROBOD',
+  'YANGIHAYOT',
+  'TOSHKENTTUMANI',
+  'ZANGIOTA',
+  'QIBRAY',
+])
 
 function parseArgs(argv) {
   const options = {
@@ -148,6 +169,13 @@ function normalizeLookup(value) {
     .replace(/[^A-ZА-Я0-9']/g, '')
 }
 
+function isTashkentWarehouse(value) {
+  const key = normalizeLookup(value)
+  if (!key) return false
+  if (TASHKENT_KEYS.has(key)) return true
+  return key.includes('TOSHKENT') || key.includes('TASHKENT')
+}
+
 function warehouseKey(value) {
   return normalizeLookup(
     String(value || '')
@@ -263,6 +291,15 @@ function getWarehouseMeta(rawCity, references) {
   const city = cleanText(rawCity)
   const mappedWarehouse = references.cityToWarehouse.get(normalizeLookup(city))
   const warehouse = mappedWarehouse || cleanText(city.replace(/^\s*\d+\s+/, '').replace(/\bWAREHOUSE\b/gi, '')) || 'Не определено'
+  if (isTashkentWarehouse(city) || isTashkentWarehouse(warehouse)) {
+    return {
+      city: 'TOSHKENT',
+      region: 'TOSHKENT',
+      manager: TASHKENT_MANAGER,
+      email: TASHKENT_EMAIL,
+      availabilityLagDays: 1,
+    }
+  }
   const manager = references.warehouseManagers.get(warehouseKey(warehouse)) || references.warehouseManagers.get(normalizeLookup(warehouse))
   return {
     city: cleanText(warehouse),

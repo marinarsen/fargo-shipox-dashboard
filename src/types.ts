@@ -80,7 +80,9 @@ export type RegionMetric = {
   deliveryVolume: number
   deliveryDelta: number
   delivered: number
+  deliveredDelta?: number
   deliveryTime: number
+  deliveryTimeDelta?: number
   firstAttemptTime: number
   noAttempt2d: number
   stale: number

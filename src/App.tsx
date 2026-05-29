@@ -1,36 +1,21 @@
 import {
-  AlertTriangle,
   Building2,
   CalendarDays,
-  ChevronRight,
-  CircleDot,
-  Clock3,
   Filter,
   MapPin,
   PackageCheck,
-  Route,
   Search,
-  Users,
 } from 'lucide-react'
 import { useEffect, useMemo, useState } from 'react'
 import './App.css'
 import type {
-  CityMetric,
   ClientMetric,
   DailyRouteMetric,
   DashboardSnapshot,
-  DeliveryFlowMetric,
   Kpi,
-  OrderRecord,
   RegionMetric,
   RiskLevel,
 } from './types'
-
-type DetailTarget =
-  | { kind: 'client'; item: ClientMetric }
-  | { kind: 'city'; item: CityMetric }
-  | { kind: 'region'; item: RegionMetric }
-  | { kind: 'flow'; item: DeliveryFlowMetric }
 
 type AnalysisMode = 'events' | 'cohort'
 
@@ -86,6 +71,27 @@ const DEFAULT_TODAY = '2026-05-25'
 const pieColors = ['#1f8a5f', '#2f6fb2', '#d7a31f', '#d66a2f', '#5f7f95', '#8a63a8', '#b8c4cf']
 const QUICK_WORKFLOW_URL = 'https://github.com/marinarsen/fargo-shipox-dashboard/actions/workflows/update-shipox-dashboard.yml'
 const DEEP_WORKFLOW_URL = 'https://github.com/marinarsen/fargo-shipox-dashboard/actions/workflows/deep-shipox-dashboard.yml'
+const TASHKENT_MANAGER = 'Турабек Касимов / Марсель Харисов'
+const TASHKENT_EMAIL = 'turabek.kasimov@fargo.uz marsel.kharisov@fargo.uz'
+const TASHKENT_REGION_KEYS = new Set([
+  'toshkent',
+  'tashkent',
+  'mirzo-ulug-bek',
+  'yunusobod',
+  'shayxontohur',
+  'chilonzor',
+  'sergeli',
+  'yashnobod',
+  'yakkasaroy',
+  'uchtepa',
+  'olmazor',
+  'bektemir',
+  'mirobod',
+  'yangihayot',
+  'toshkent-tumani',
+  'zangiota',
+  'qibray',
+])
 
 function formatNumber(value: number) {
   return Math.round(value).toLocaleString('ru-RU')
@@ -94,6 +100,25 @@ function formatNumber(value: number) {
 function formatDelta(value: number) {
   if (value > 0) return `+${value}%`
   return `${value}%`
+}
+
+function formatSignedDays(value = 0) {
+  if (!value) return '0,0 дн'
+  const prefix = value > 0 ? '+' : ''
+  return `${prefix}${value.toFixed(1).replace('.', ',')} дн`
+}
+
+function normalizeRouteRegion(route: DailyRouteMetric): DailyRouteMetric {
+  if (!TASHKENT_REGION_KEYS.has(route.regionKey) && !TASHKENT_REGION_KEYS.has(route.cityKey)) return route
+  return {
+    ...route,
+    cityKey: route.cityKey && TASHKENT_REGION_KEYS.has(route.cityKey) ? 'toshkent' : route.cityKey,
+    cityName: route.cityKey && TASHKENT_REGION_KEYS.has(route.cityKey) ? 'TOSHKENT' : route.cityName,
+    regionKey: 'toshkent',
+    regionName: 'TOSHKENT',
+    manager: TASHKENT_MANAGER,
+    email: TASHKENT_EMAIL,
+  }
 }
 
 function kpiClass(kpi: Kpi) {
@@ -256,59 +281,20 @@ function aggregateRoutes(
 
   return [...map.values()].map((row) => {
     const previous = previousMap.get(row.key)
+    const deliveryTime = row.delivered ? row.deliveryTimeSum / row.delivered : 0
+    const previousDeliveryTime = previous?.delivered ? previous.deliveryTimeSum / previous.delivered : 0
     return {
       ...row,
       pickupDelta: calcDelta(row.pickupVolume, previous?.pickupVolume || 0),
       deliveryDelta: calcDelta(row.deliveryVolume, previous?.deliveryVolume || 0),
-      deliveryTime: row.delivered ? row.deliveryTimeSum / row.delivered : 0,
+      deliveredDelta: calcDelta(row.delivered, previous?.delivered || 0),
+      deliveryTime,
+      deliveryTimeDelta: previousDeliveryTime ? deliveryTime - previousDeliveryTime : 0,
       firstAttemptTime: row.delivered ? row.firstAttemptTimeSum / row.delivered : 0,
       cohortDeliveryTime: row.cohortDelivered ? row.cohortDeliveryTimeSum / row.cohortDelivered : 0,
       risk: riskOf(row),
     }
   })
-}
-
-function getDetailTitle(target: DetailTarget) {
-  if (target.kind === 'client') return `Клиент: ${target.item.name}`
-  if (target.kind === 'city') return `Город: ${target.item.name}`
-  if (target.kind === 'region') return `Регион: ${target.item.name}`
-  return `Тип доставки: ${target.item.label}`
-}
-
-function getDetailRows(target: DetailTarget) {
-  const item = target.item
-  const created = 'deliveryVolume' in item ? item.deliveryVolume || 0 : item.active
-  const rows = [
-    ['Создано', formatNumber(created)],
-    ['Доставлено', formatNumber(item.delivered || 0)],
-    ['Delivery time', `${item.deliveryTime.toFixed(1)} дн`],
-    ['До 1-й попытки', `${item.firstAttemptTime.toFixed(1)} дн`],
-    ['Без попытки 2+ дня', formatNumber(item.noAttempt2d)],
-    ['Статус не обновлялся', formatNumber(item.stale)],
-  ]
-  if (target.kind !== 'client') rows.unshift(['Ответственный', item.manager || 'Операции'])
-  if ('pickupVolume' in item) rows.push(['Из ПВЗ / прием', `${formatNumber(item.pickupVolume || 0)} (${formatDelta(item.pickupDelta || 0)})`])
-  if ('deliveryVolume' in item) rows.push(['Создано в город', `${formatNumber(item.deliveryVolume || 0)} (${formatDelta(item.deliveryDelta || 0)})`])
-  if ('tails' in item) rows.push(['Старые хвосты', formatNumber(item.tails)])
-  if ('failed' in item) rows.push(['Failed', formatNumber(item.failed)])
-  return rows
-}
-
-function orderMatchesDetail(order: OrderRecord, target: DetailTarget) {
-  if (target.kind === 'client') return order.clientKey === target.item.key
-  if (target.kind === 'city') return order.cityKey === target.item.key
-  if (target.kind === 'flow') return order.flowKey === target.item.key
-  return order.manager === target.item.manager
-}
-
-function orderMatchesStatus(order: OrderRecord, status: string) {
-  if (status === 'all' || status === 'active') return true
-  if (status === 'no_attempt') return order.status.includes('Без попытки')
-  if (status === 'stale') return order.status.includes('Нет обновления')
-  if (status === 'tails') return order.status.includes('хвост')
-  if (status === 'failed') return order.status.includes('failed') || order.status.includes('Failed')
-  if (status === 'returns') return order.status.includes('Возврат')
-  return true
 }
 
 function latestSnapshotDate(snapshot: DashboardSnapshot) {
@@ -382,16 +368,12 @@ function DashboardApp({ snapshot }: { snapshot: DashboardSnapshot }) {
   const [city, setCity] = useState('all')
   const [analysisMode, setAnalysisMode] = useState<AnalysisMode>('events')
   const [clientMode, setClientMode] = useState<'top' | 'all'>('top')
-  const [cityMode, setCityMode] = useState<'top' | 'all'>('top')
   const [regionMode, setRegionMode] = useState<'top' | 'all'>('top')
   const [periodMode, setPeriodMode] = useState<'preset' | 'month' | 'week' | 'range'>('preset')
   const [month, setMonth] = useState('2026-05')
   const [week, setWeek] = useState('2026-W20')
   const [dateFrom, setDateFrom] = useState('2026-05-01')
   const [dateTo, setDateTo] = useState(today)
-  const initialDetail = snapshot.clients[0] || ({ key: 'none', name: 'Нет данных' } as ClientMetric)
-  const [detail, setDetail] = useState<DetailTarget>({ kind: 'client', item: initialDetail })
-
   const currentRange = useMemo(() => {
     if (periodMode === 'month') return normalizeRange(getMonthRange(month, today))
     if (periodMode === 'week') return normalizeRange(getWeekRange(week, today))
@@ -401,6 +383,7 @@ function DashboardApp({ snapshot }: { snapshot: DashboardSnapshot }) {
 
   const previousRange = useMemo(() => {
     const length = daysBetween(currentRange.from, currentRange.to)
+    if (length === 1) return { from: addDays(currentRange.from, -7), to: addDays(currentRange.to, -7) }
     return { from: addDays(currentRange.from, -length), to: addDays(currentRange.from, -1) }
   }, [currentRange.from, currentRange.to])
 
@@ -408,7 +391,7 @@ function DashboardApp({ snapshot }: { snapshot: DashboardSnapshot }) {
     analysisMode === 'cohort'
       ? snapshot.cohortRoutes || snapshot.dailyRoutes || []
       : snapshot.dailyRoutes || []
-  ), [analysisMode, snapshot.cohortRoutes, snapshot.dailyRoutes])
+  ).map(normalizeRouteRegion), [analysisMode, snapshot.cohortRoutes, snapshot.dailyRoutes])
   const clientSearchNeedle = normalizeSearch(clientSearch)
   const routes = useMemo(() => {
     return allRoutes.filter((route) => {
@@ -435,22 +418,10 @@ function DashboardApp({ snapshot }: { snapshot: DashboardSnapshot }) {
       .sort((a, b) => riskOrder[b.risk] - riskOrder[a.risk] || b.active + b.delivered - (a.active + a.delivered)) as ClientMetric[]
   }, [previousRoutes, routes])
 
-  const cities = useMemo(() => {
-    return aggregateRoutes(routes, 'city', previousRoutes)
-      .sort((a, b) => sortOtherLast(a) - sortOtherLast(b) || riskOrder[b.risk] - riskOrder[a.risk] || b.deliveryVolume - a.deliveryVolume) as CityMetric[]
-  }, [previousRoutes, routes])
-
   const regions = useMemo(() => {
     return aggregateRoutes(routes, 'region', previousRoutes)
       .map((item) => ({ ...item, name: item.name === 'OTHER' ? 'Прочие города' : item.name }))
       .sort((a, b) => sortOtherLast(a) - sortOtherLast(b) || riskOrder[b.risk] - riskOrder[a.risk] || b.deliveryVolume - a.deliveryVolume) as RegionMetric[]
-  }, [previousRoutes, routes])
-
-  const flows = useMemo(() => {
-    const totalActive = routes.reduce((sum, route) => sum + route.active, 0)
-    return aggregateRoutes(routes, 'flow', previousRoutes)
-      .map((item) => ({ ...item, label: item.name, shortLabel: item.name, share: Math.round((item.active / Math.max(1, totalActive)) * 100) }))
-      .sort((a, b) => riskOrder[b.risk] - riskOrder[a.risk] || b.deliveryVolume - a.deliveryVolume) as DeliveryFlowMetric[]
   }, [previousRoutes, routes])
 
   const clientOptions = useMemo(() => {
@@ -470,15 +441,8 @@ function DashboardApp({ snapshot }: { snapshot: DashboardSnapshot }) {
   }, [allRoutes])
 
   const visibleClients = clientMode === 'top' ? clients.slice(0, 8) : clients
-  const visibleCities = cityMode === 'top' ? cities.slice(0, 10) : cities
   const visibleRegions = regionMode === 'top' ? regions.slice(0, 8) : regions
-  const visibleOrders = snapshot.orders
-    .filter((order) => orderMatchesDetail(order, detail))
-    .filter((order) => orderMatchesStatus(order, status))
-    .slice(0, 10)
-  const maxCityActive = Math.max(1, ...cities.map((item) => item.deliveryVolume))
   const maxRegionActive = Math.max(1, ...regions.map((item) => item.deliveryVolume))
-  const maxFlowActive = Math.max(1, ...flows.map((item) => item.deliveryVolume))
   const isCohort = analysisMode === 'cohort'
   const showNoAttempt = clients.some((item) => item.noAttempt2d > 0)
   const showStale = clients.some((item) => item.stale > 0)
@@ -604,8 +568,8 @@ function DashboardApp({ snapshot }: { snapshot: DashboardSnapshot }) {
                 </thead>
                 <tbody>
                   {visibleClients.map((item) => (
-                    <tr className={detail.kind === 'client' && detail.item.key === item.key ? 'is-selected' : ''} key={item.key} onClick={() => setDetail({ kind: 'client', item })}>
-                      <td><button className="row-button" type="button">{item.name}<ChevronRight size={15} /></button></td>
+                    <tr key={item.key}>
+                      <td><span className="row-label">{item.name}</span></td>
                       <td>{formatNumber(item.deliveryVolume || 0)}</td>
                       <td>{formatNumber(isCohort ? item.cohortDelivered || 0 : item.delivered)}</td>
                       <td>{(isCohort ? item.cohortDeliveryTime || 0 : item.deliveryTime).toFixed(1)}</td>
@@ -622,133 +586,50 @@ function DashboardApp({ snapshot }: { snapshot: DashboardSnapshot }) {
             <TopClientsPie segments={topClientPie} />
           </div>
 
-          <div className="split-panels">
-            <article className="panel-block">
-              <div className="section-head compact">
-                <div><h2>Регионы</h2><p>География, ответственные менеджеры и изменение объема к прошлому периоду.</p></div>
-                <div className="view-toggle small">
-                  <button className={regionMode === 'top' ? 'active' : ''} type="button" onClick={() => setRegionMode('top')}>Топ</button>
-                  <button className={regionMode === 'all' ? 'active' : ''} type="button" onClick={() => setRegionMode('all')}>Все</button>
-                </div>
-              </div>
-              <div className="city-stack">
-                {visibleRegions.map((item) => (
-                  <button className={`city-card region-card ${detail.kind === 'region' && detail.item.key === item.key ? 'is-selected' : ''}`} key={item.key} type="button" onClick={() => setDetail({ kind: 'region', item })}>
-                    <div><strong>{item.name}</strong><span>{item.manager}</span></div>
-                    <div className="city-bar"><span style={{ width: barWidth(item.deliveryVolume, maxRegionActive) }} /></div>
-                    <div className="city-numbers"><span>{formatNumber(item.deliveryVolume)} создано</span><span>из ПВЗ {deltaText(item.pickupDelta)}</span><span>в город {deltaText(item.deliveryDelta)}</span></div>
-                  </button>
-                ))}
-              </div>
-            </article>
-
-            <article className="panel-block">
-              <div className="section-head compact">
-                <div><h2>Города</h2><p>Объемы по городам, ответственный менеджер и изменение к прошлому периоду.</p></div>
-                <div className="view-toggle small">
-                  <button className={cityMode === 'top' ? 'active' : ''} type="button" onClick={() => setCityMode('top')}>Топ</button>
-                  <button className={cityMode === 'all' ? 'active' : ''} type="button" onClick={() => setCityMode('all')}>Все</button>
-                </div>
-              </div>
-              <div className="city-stack">
-                {visibleCities.map((item) => (
-                  <button className={`city-card ${detail.kind === 'city' && detail.item.key === item.key ? 'is-selected' : ''}`} key={item.key} type="button" onClick={() => setDetail({ kind: 'city', item })}>
-                    <div><strong>{item.name}</strong><span>{item.region} / {item.manager}</span></div>
-                    <div className="city-bar"><span style={{ width: barWidth(item.deliveryVolume, maxCityActive) }} /></div>
-                    <div className="city-numbers"><span>{formatNumber(item.deliveryVolume)} создано</span><span>из ПВЗ {deltaText(item.pickupDelta)}</span><span>в город {deltaText(item.deliveryDelta)}</span></div>
-                  </button>
-                ))}
-              </div>
-            </article>
-          </div>
-
-          <article className="panel-block">
+          <article className="panel-block region-panel">
             <div className="section-head compact">
-              <div><h2>Типы доставки</h2><p>GDP учитываем как ПВЗ. Видны все варианты: ПВЗ/дверь/возврат/городская доставка.</p></div>
-              <Route size={19} />
+              <div>
+                <h2>Регионы</h2>
+                <p>Прием, доставка, DT и сравнение с прошлым периодом. Для одного дня сравниваем с тем же днем прошлой недели.</p>
+              </div>
+              <div className="view-toggle small">
+                <button className={regionMode === 'top' ? 'active' : ''} type="button" onClick={() => setRegionMode('top')}>Топ</button>
+                <button className={regionMode === 'all' ? 'active' : ''} type="button" onClick={() => setRegionMode('all')}>Все</button>
+              </div>
             </div>
-            <div className="flow-list">
-              {flows.map((item) => (
-                <button className={`flow-card ${detail.kind === 'flow' && detail.item.key === item.key ? 'is-selected' : ''}`} key={item.key} type="button" onClick={() => setDetail({ kind: 'flow', item })}>
-                  <div className="flow-top"><strong>{item.label}</strong></div>
-                  <div className="mini-bar"><span style={{ width: barWidth(item.deliveryVolume, maxFlowActive) }} /></div>
-                  <div className="flow-metrics">
-                    <span>{formatNumber(item.active)} в работе</span><span>из ПВЗ {formatNumber(item.pickupVolume)} ({deltaText(item.pickupDelta)})</span><span>в город {formatNumber(item.deliveryVolume)} ({deltaText(item.deliveryDelta)})</span><span>DT {item.deliveryTime.toFixed(1)}</span>
-                  </div>
-                </button>
-              ))}
+            <div className="table-shell region-table-shell">
+              <table className="smart-table region-table">
+                <thead>
+                  <tr>
+                    <th>Регион</th>
+                    <th>Ответственные</th>
+                    <th>На прием</th>
+                    <th>Принято</th>
+                    <th>На доставку</th>
+                    <th>Доставлено</th>
+                    <th>DT</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {visibleRegions.map((item) => (
+                    <tr key={item.key}>
+                      <td>
+                        <span className="row-label">{item.name}</span>
+                        <div className="region-bar"><span style={{ width: barWidth(item.deliveryVolume, maxRegionActive) }} /></div>
+                      </td>
+                      <td>{item.manager || 'Не назначен'}</td>
+                      <td>{formatNumber(item.pickupVolume)}</td>
+                      <td><strong>{formatNumber(item.pickupVolume)}</strong><small>{deltaText(item.pickupDelta)}</small></td>
+                      <td>{formatNumber(item.deliveryVolume)}</td>
+                      <td><strong>{formatNumber(item.delivered)}</strong><small>{deltaText(item.deliveredDelta || 0)}</small></td>
+                      <td><strong>{item.deliveryTime.toFixed(1)}</strong><small>{formatSignedDays(item.deliveryTimeDelta)}</small></td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
             </div>
           </article>
         </section>
-
-        <aside className="inspector">
-          <article className="detail-card">
-            <div className="section-head compact"><div><h2>{getDetailTitle(detail)}</h2><p>Детали выбранной строки</p></div><CircleDot size={18} /></div>
-            <div className="detail-grid">{getDetailRows(detail).map(([label, value]) => <div key={label}><span>{label}</span><strong>{value}</strong></div>)}</div>
-            <div className="focus-line"><Clock3 size={17} /><span>Приоритет: без попытки 2+ дня, старые хвосты, нет обновления статуса, затем рост/спад приема и доставки по ответственному менеджеру.</span></div>
-          </article>
-
-          <article className="detail-card">
-            <div className="section-head compact"><div><h2>Заказы в выборке</h2><p>Можно кликнуть на клиента, город, регион или тип доставки и увидеть примеры заказов.</p></div><Search size={19} /></div>
-            <div className="orders-list">
-              {visibleOrders.length ? visibleOrders.map((order) => (
-                <button className="order-row" type="button" key={order.id}>
-                  <strong>{order.id}</strong>
-                  <span>{order.clientName} / {order.cityName}</span>
-                  <span>{order.flowLabel}</span>
-                  <span>{order.status}</span>
-                  <small>создан {order.createdAt}, обновлен {order.statusUpdatedAt}, источник: {order.source}</small>
-                </button>
-              )) : <div className="empty-state">По этой комбинации фильтров нет примеров в drilldown. Агрегаты выше считаются по всем строкам Shipox, не только по этим примерам.</div>}
-            </div>
-          </article>
-
-          <article className="detail-card">
-            <div className="section-head compact"><div><h2>Откуда цифры</h2><p>Проверочная логика расчета</p></div><Filter size={19} /></div>
-            <div className="formula-list">
-              <div><strong>Период</strong><span>фильтруем ежедневные агрегаты Shipox по выбранным датам, без коэффициентов и имитации</span></div>
-              <div><strong>Из ПВЗ / в город</strong><span>из ПВЗ показывает отправки, которые стартуют из пункта; в город показывает все созданные заказы по городу назначения</span></div>
-              <div><strong>Сравнение</strong><span>текущий отрезок сравнивается с предыдущим отрезком такой же длины</span></div>
-              <div><strong>До 1-й попытки</strong><span>ожидает подключение webhook-события первой попытки</span></div>
-              <div><strong>Ручной контроль</strong><span>сейчас строится из активных заказов, возвратов, failed и просрочек по статусу</span></div>
-            </div>
-          </article>
-
-          <article className="detail-card">
-            <div className="section-head compact"><div><h2>Алерты</h2><p>С конкретной привязкой к ops-менеджерам регионов</p></div><AlertTriangle size={19} /></div>
-            <div className="alert-list">
-              {regions.filter((item) => item.risk !== 'ok').slice(0, 8).map((item) => (
-                <div className={`alert-item alert-${item.risk}`} key={item.key}>
-                  <div><strong>{item.name}: {formatNumber(item.noAttempt2d)} без первой попытки</strong><span>{item.manager}</span></div>
-                  <p>В работе {formatNumber(item.active)}, нет статуса {formatNumber(item.stale)}, возвраты {formatNumber(item.returns)}, failed {formatNumber(item.failed)}.</p>
-                </div>
-              ))}
-            </div>
-          </article>
-
-          <article className="detail-card">
-            <div className="section-head compact"><div><h2>Менеджеры регионов</h2><p>Где растет прием и доставка</p></div><Users size={19} /></div>
-            <div className="manager-list">
-              {visibleRegions.map((item) => (
-                <div className="manager-row" key={item.key}>
-                  <strong>{item.manager}</strong>
-                  <span>{item.name}</span>
-                  <span>из ПВЗ {deltaText(item.pickupDelta)}</span>
-                  <span>в город {deltaText(item.deliveryDelta)}</span>
-                </div>
-              ))}
-            </div>
-          </article>
-
-          <article className="detail-card">
-            <div className="section-head compact"><div><h2>2026 динамика</h2><p>Доставлено и DT по месяцам</p></div><PackageCheck size={19} /></div>
-            <div className="timeline">
-              {snapshot.timeline.map((item) => (
-                <div className="timeline-row" key={item.label}><span>{item.label}</span><div className="timeline-track"><i style={{ width: barWidth(item.delivered, 90000) }} /></div><strong>{formatNumber(item.delivered)}</strong><small>DT {item.deliveryTime.toFixed(1)}</small></div>
-              ))}
-            </div>
-          </article>
-        </aside>
       </section>
     </main>
   )

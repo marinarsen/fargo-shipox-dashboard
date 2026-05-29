@@ -432,10 +432,6 @@ h2 {
   font-weight: 700;
 }
 
-.smart-table tr {
-  cursor: pointer;
-}
-
 .smart-table tbody tr:hover,
 .smart-table .is-selected,
 .flow-card.is-selected,
@@ -461,6 +457,53 @@ h2 {
 .clients-table .row-button {
   overflow-wrap: anywhere;
   white-space: normal;
+}
+
+.row-label {
+  display: inline-block;
+  max-width: 520px;
+  color: var(--ink);
+  font-weight: 750;
+  overflow-wrap: anywhere;
+  white-space: normal;
+}
+
+.region-panel {
+  padding: 14px;
+}
+
+.region-table {
+  min-width: 980px;
+}
+
+.region-table td {
+  vertical-align: middle;
+}
+
+.region-table td strong,
+.region-table td small {
+  display: block;
+}
+
+.region-table td small {
+  margin-top: 3px;
+  color: var(--muted);
+  font-size: 12px;
+}
+
+.region-bar {
+  height: 5px;
+  margin-top: 8px;
+  overflow: hidden;
+  border-radius: 999px;
+  background: #e7edf2;
+}
+
+.region-bar span {
+  display: block;
+  height: 100%;
+  border-radius: inherit;
+  background: #1f8a5f;
 }
 
 .pie-panel {
