@@ -22,6 +22,14 @@ const RETURNS = new Set(['returned_to_origin', 'returning_to_origin', 'out_for_r
 const FAILED = new Set(['delivery_failed', 'delivery_rejected', 'recipient_mobile_no_response', 'recipient_mobile_switched_off', 'recipient_not_available', 'bad_recipient_address'])
 const TASHKENT_MANAGER = 'Турабек Касимов / Марсель Харисов'
 const TASHKENT_EMAIL = 'turabek.kasimov@fargo.uz marsel.kharisov@fargo.uz'
+const QOQON_YANGI_BOZOR_MANAGER = 'Бахтиер Низаметдинов'
+const QOQON_YANGI_BOZOR_EMAIL = 'baxtiyor.nizametdinov@fargo.uz'
+const QOQON_YANGI_BOZOR_KEYS = new Set([
+  'QOQONYANGIBOZOR',
+  'QOQONYANGIBOZORFARGOOFFICE',
+  "QO'QONYANGIBOZOR",
+  "QO'QONYANGIBOZORFARGOOFFICE",
+])
 const TASHKENT_KEYS = new Set([
   'TOSHKENT',
   'TASHKENT',
@@ -176,6 +184,12 @@ function isTashkentWarehouse(value) {
   return key.includes('TOSHKENT') || key.includes('TASHKENT')
 }
 
+function isQoqonYangiBozor(value) {
+  const key = normalizeLookup(value)
+  if (!key) return false
+  return QOQON_YANGI_BOZOR_KEYS.has(key) || (key.includes('QO') && key.includes('QON') && key.includes('YANGIBOZOR'))
+}
+
 function warehouseKey(value) {
   return normalizeLookup(
     String(value || '')
@@ -297,6 +311,15 @@ function getWarehouseMeta(rawCity, references) {
       region: 'TOSHKENT',
       manager: TASHKENT_MANAGER,
       email: TASHKENT_EMAIL,
+      availabilityLagDays: 1,
+    }
+  }
+  if (isQoqonYangiBozor(city) || isQoqonYangiBozor(warehouse)) {
+    return {
+      city: "QO'QON (YANGI BOZOR)",
+      region: "QO'QON (YANGI BOZOR)",
+      manager: QOQON_YANGI_BOZOR_MANAGER,
+      email: QOQON_YANGI_BOZOR_EMAIL,
       availabilityLagDays: 1,
     }
   }

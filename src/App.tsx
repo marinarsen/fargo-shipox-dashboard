@@ -73,6 +73,13 @@ const QUICK_WORKFLOW_URL = 'https://github.com/marinarsen/fargo-shipox-dashboard
 const DEEP_WORKFLOW_URL = 'https://github.com/marinarsen/fargo-shipox-dashboard/actions/workflows/deep-shipox-dashboard.yml'
 const TASHKENT_MANAGER = 'Турабек Касимов / Марсель Харисов'
 const TASHKENT_EMAIL = 'turabek.kasimov@fargo.uz marsel.kharisov@fargo.uz'
+const QOQON_YANGI_BOZOR_MANAGER = 'Бахтиер Низаметдинов'
+const QOQON_YANGI_BOZOR_KEYS = new Set([
+  'qo-qon-yangi-bozor',
+  'qo-qon-yangibozor',
+  'qoqon-yangi-bozor',
+  'qoqon-yangibozor',
+])
 const TASHKENT_REGION_KEYS = new Set([
   'toshkent',
   'tashkent',
@@ -115,6 +122,12 @@ function deltaClass(value: number | undefined, positiveIsGood: boolean, enabled:
 }
 
 function normalizeRouteRegion(route: DailyRouteMetric): DailyRouteMetric {
+  if (QOQON_YANGI_BOZOR_KEYS.has(route.regionKey) || QOQON_YANGI_BOZOR_KEYS.has(route.cityKey)) {
+    return {
+      ...route,
+      manager: QOQON_YANGI_BOZOR_MANAGER,
+    }
+  }
   if (!TASHKENT_REGION_KEYS.has(route.regionKey) && !TASHKENT_REGION_KEYS.has(route.cityKey)) return route
   return {
     ...route,
