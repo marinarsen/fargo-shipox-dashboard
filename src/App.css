@@ -491,6 +491,23 @@ h2 {
   font-size: 12px;
 }
 
+.delta-value {
+  font-weight: 700;
+}
+
+.delta-good {
+  color: #147d54 !important;
+}
+
+.delta-bad {
+  color: #b42318 !important;
+}
+
+.delta-neutral {
+  color: var(--muted) !important;
+  font-weight: 600;
+}
+
 .region-bar {
   height: 5px;
   margin-top: 8px;

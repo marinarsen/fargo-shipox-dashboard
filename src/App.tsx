@@ -108,6 +108,12 @@ function formatSignedDays(value = 0) {
   return `${prefix}${value.toFixed(1).replace('.', ',')} дн`
 }
 
+function deltaClass(value: number | undefined, positiveIsGood: boolean, enabled: boolean) {
+  if (!enabled || !value) return 'delta-value delta-neutral'
+  const isGood = positiveIsGood ? value > 0 : value < 0
+  return `delta-value ${isGood ? 'delta-good' : 'delta-bad'}`
+}
+
 function normalizeRouteRegion(route: DailyRouteMetric): DailyRouteMetric {
   if (!TASHKENT_REGION_KEYS.has(route.regionKey) && !TASHKENT_REGION_KEYS.has(route.cityKey)) return route
   return {
@@ -590,7 +596,7 @@ function DashboardApp({ snapshot }: { snapshot: DashboardSnapshot }) {
             <div className="section-head compact">
               <div>
                 <h2>Регионы</h2>
-                <p>Прием, доставка, DT и сравнение с прошлым периодом. Для одного дня сравниваем с тем же днем прошлой недели.</p>
+                <p>Объемы из Shipox API, DT сейчас по созданию и финальному статусу. Для одного дня сравниваем с тем же днем прошлой недели.</p>
               </div>
               <div className="view-toggle small">
                 <button className={regionMode === 'top' ? 'active' : ''} type="button" onClick={() => setRegionMode('top')}>Топ</button>
@@ -619,10 +625,10 @@ function DashboardApp({ snapshot }: { snapshot: DashboardSnapshot }) {
                       </td>
                       <td>{item.manager || 'Не назначен'}</td>
                       <td>{formatNumber(item.pickupVolume)}</td>
-                      <td><strong>{formatNumber(item.pickupVolume)}</strong><small>{deltaText(item.pickupDelta)}</small></td>
-                      <td>{formatNumber(item.deliveryVolume)}</td>
-                      <td><strong>{formatNumber(item.delivered)}</strong><small>{deltaText(item.deliveredDelta || 0)}</small></td>
-                      <td><strong>{item.deliveryTime.toFixed(1)}</strong><small>{formatSignedDays(item.deliveryTimeDelta)}</small></td>
+                      <td><strong>{formatNumber(item.pickupVolume)}</strong><small className={deltaClass(item.pickupDelta, true, hasPreviousData)}>{deltaText(item.pickupDelta)}</small></td>
+                      <td><strong>{formatNumber(item.deliveryVolume)}</strong><small className={deltaClass(item.deliveryDelta, true, hasPreviousData)}>{deltaText(item.deliveryDelta)}</small></td>
+                      <td><strong>{formatNumber(item.delivered)}</strong><small className={deltaClass(item.deliveredDelta, true, hasPreviousData)}>{deltaText(item.deliveredDelta || 0)}</small></td>
+                      <td><strong>{item.deliveryTime.toFixed(1)}</strong><small className={deltaClass(item.deliveryTimeDelta, false, hasPreviousData)}>{formatSignedDays(item.deliveryTimeDelta)}</small></td>
                     </tr>
                   ))}
                 </tbody>
