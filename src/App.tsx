@@ -609,8 +609,6 @@ function DashboardApp({ snapshot }: { snapshot: DashboardSnapshot }) {
                   <tr>
                     <th>Регион</th>
                     <th>Ответственные</th>
-                    <th>На прием</th>
-                    <th>Принято</th>
                     <th>На доставку</th>
                     <th>Доставлено</th>
                     <th>DT</th>
@@ -624,8 +622,6 @@ function DashboardApp({ snapshot }: { snapshot: DashboardSnapshot }) {
                         <div className="region-bar"><span style={{ width: barWidth(item.deliveryVolume, maxRegionActive) }} /></div>
                       </td>
                       <td>{item.manager || 'Не назначен'}</td>
-                      <td>{formatNumber(item.pickupVolume)}</td>
-                      <td><strong>{formatNumber(item.pickupVolume)}</strong><small className={deltaClass(item.pickupDelta, true, hasPreviousData)}>{deltaText(item.pickupDelta)}</small></td>
                       <td><strong>{formatNumber(item.deliveryVolume)}</strong><small className={deltaClass(item.deliveryDelta, true, hasPreviousData)}>{deltaText(item.deliveryDelta)}</small></td>
                       <td><strong>{formatNumber(item.delivered)}</strong><small className={deltaClass(item.deliveredDelta, true, hasPreviousData)}>{deltaText(item.deliveredDelta || 0)}</small></td>
                       <td><strong>{item.deliveryTime.toFixed(1)}</strong><small className={deltaClass(item.deliveryTimeDelta, false, hasPreviousData)}>{formatSignedDays(item.deliveryTimeDelta)}</small></td>
