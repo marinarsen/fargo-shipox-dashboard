@@ -582,7 +582,7 @@ function DashboardApp({ snapshot }: { snapshot: DashboardSnapshot }) {
               <table className="smart-table clients-table">
                 <thead>
                   <tr>
-                    <th>Клиент</th><th>{isCohort ? 'Создано' : 'Статусов'}</th><th>Доставлено</th><th>DT</th>{isCohort && <th>Доля</th>}{showNoAttempt && <th>Нет попытки</th>}{showStale && <th>Нет статуса</th>}{showTails && <th>Хвосты</th>}<th>Возвраты</th><th>Failed</th>
+                    <th>Клиент</th><th>Создано</th><th>Picked up</th><th>Доставлено</th><th>DT</th>{isCohort && <th>Доля</th>}{showNoAttempt && <th>Нет попытки</th>}{showStale && <th>Нет статуса</th>}{showTails && <th>Хвосты</th>}<th>Возвраты</th><th>Failed</th>
                   </tr>
                 </thead>
                 <tbody>
@@ -590,6 +590,7 @@ function DashboardApp({ snapshot }: { snapshot: DashboardSnapshot }) {
                     <tr key={item.key}>
                       <td><span className="row-label">{item.name}</span></td>
                       <td>{formatNumber(item.deliveryVolume || 0)}</td>
+                      <td>{formatNumber(item.pickupVolume || 0)}</td>
                       <td>{formatNumber(isCohort ? item.cohortDelivered || 0 : item.delivered)}</td>
                       <td>{(isCohort ? item.cohortDeliveryTime || 0 : item.deliveryTime).toFixed(1)}</td>
                       {isCohort && <td>{`${Math.round(((item.cohortDelivered || 0) / Math.max(1, item.deliveryVolume || 0)) * 1000) / 10}%`}</td>}
